@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stock Info MVP</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="container">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">PRIVATE USE</p>
+          <h1>Beginner Stock Briefing</h1>
+          <p class="sub">
+            종목별 뉴스/리포트를 수집해 8줄 요약으로 제공합니다. 투자 권유가 아닌 정보 정리 도구입니다.
+          </p>
+        </div>
+        <div class="actions">
+          <form id="collect-form" method="post" action="/collect">
+            <label for="stock_codes">수집 대상 코드(선택, 콤마 구분)</label>
+            <input id="stock_codes" name="stock_codes" placeholder="예: 005930,000660" />
+            <button type="submit">지금 수집 실행</button>
+          </form>
+          <button id="universe-button" type="button">유니버스 갱신 실행</button>
+          <button id="brief-button" type="button">모닝 브리프 즉시 발송</button>
+          <pre id="collect-result" class="result-box">수집 실행 대기</pre>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>종목 요약 현황</h2>
+        <div class="stock-grid">
+          {% for row in rows %}
+          <a class="stock-card" href="{{ url_for('stock_detail', code=row['stock_code']) }}">
+            <p class="code">{{ row["stock_code"] }}</p>
+            <h3>{{ row["stock_name"] }}</h3>
+            <p class="line1">{{ row["line1"] or "요약 없음" }}</p>
+            <p class="asof">{{ row["as_of"] or "미생성" }}</p>
+          </a>
+          {% endfor %}
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const form = document.getElementById("collect-form");
+      const result = document.getElementById("collect-result");
+      const briefButton = document.getElementById("brief-button");
+      const universeButton = document.getElementById("universe-button");
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        result.textContent = "수집 실행 중...";
+        try {
+          const res = await fetch("/collect", {
+            method: "POST",
+            body: new FormData(form),
+          });
+          const data = await res.json();
+          result.textContent = JSON.stringify(data, null, 2);
+        } catch (err) {
+          result.textContent = "수집 실패: " + err.message;
+        }
+      });
+
+      briefButton.addEventListener("click", async () => {
+        result.textContent = "모닝 브리프 전송 중...";
+        try {
+          const res = await fetch("/brief/send", { method: "POST" });
+          const data = await res.json();
+          result.textContent = JSON.stringify(data, null, 2);
+        } catch (err) {
+          result.textContent = "브리프 전송 실패: " + err.message;
+        }
+      });
+
+      universeButton.addEventListener("click", async () => {
+        result.textContent = "유니버스 갱신 중...";
+        try {
+          const res = await fetch("/universe/refresh", { method: "POST" });
+          const data = await res.json();
+          result.textContent = JSON.stringify(data, null, 2);
+        } catch (err) {
+          result.textContent = "유니버스 갱신 실패: " + err.message;
+        }
+      });
+    </script>
+  </body>
+</html>

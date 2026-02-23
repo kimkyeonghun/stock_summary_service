@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ stock.name }} - Stock Info MVP</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="container">
+      <section class="hero compact">
+        <div>
+          <p class="eyebrow">{{ stock.code }}</p>
+          <h1>{{ stock.name }}</h1>
+          <p class="sub">검색 키워드: {{ ", ".join(stock.queries) }}</p>
+        </div>
+        <div class="actions">
+          <a class="back-link" href="{{ url_for('index') }}">목록으로 돌아가기</a>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>최신 8줄 요약</h2>
+        {% if summary %}
+        <ol class="summary-list">
+          <li>{{ summary["line1"] }}</li>
+          <li>{{ summary["line2"] }}</li>
+          <li>{{ summary["line3"] }}</li>
+          <li>{{ summary["line4"] }}</li>
+          <li>{{ summary["line5"] }}</li>
+          <li>{{ summary["line6"] }}</li>
+          <li>{{ summary["line7"] }}</li>
+          <li>{{ summary["line8"] }}</li>
+        </ol>
+        <p class="asof">as_of: {{ summary["as_of"] }} / model: {{ summary["model"] }}</p>
+        {% else %}
+        <p>요약이 아직 생성되지 않았습니다.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel">
+        <h2>요약 근거 출처</h2>
+        {% if source_rows %}
+        <ul class="source-list">
+          {% for row in source_rows %}
+          <li>
+            <span class="badge">line {{ row["line_nos_label"] }}</span>
+            {% if row["duplicate_count"] > 1 %}
+            <span class="badge duplicate">중복 {{ row["duplicate_count"] }}건 묶음</span>
+            {% endif %}
+            <a href="{{ row['url'] }}" target="_blank" rel="noreferrer">{{ row["title"] }}</a>
+            <small>{{ row["source"] }} / {{ row["published_at"] or "-" }}</small>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p>근거 출처 매핑 데이터가 없습니다.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel">
+        <h2>최근 수집 문서</h2>
+        <ul class="source-list">
+          {% for row in doc_rows %}
+          <li>
+            <span class="badge">{{ row["doc_type"] }}</span>
+            <a href="{{ row['url'] }}" target="_blank" rel="noreferrer">{{ row["title"] }}</a>
+            <small>{{ row["source"] }} / {{ row["published_at"] or "-" }}</small>
+          </li>
+          {% endfor %}
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>
