@@ -19,6 +19,7 @@
           <p class="eyebrow">{{ stock.code }}</p>
           <h1>{{ stock.name }}</h1>
           <p class="sub">검색 키워드: {{ ", ".join(stock.queries) }}</p>
+          <p class="sub">섹터: {{ ", ".join(stock.sectors) if stock.sectors else "-" }}</p>
         </div>
         <div class="actions">
           <a class="back-link" href="{{ url_for('index') }}">목록으로 돌아가기</a>
@@ -26,56 +27,119 @@
       </section>
 
       <section class="panel">
-        <h2>최신 8줄 요약</h2>
-        {% if summary %}
-        <ol class="summary-list">
-          <li>{{ summary["line1"] }}</li>
-          <li>{{ summary["line2"] }}</li>
-          <li>{{ summary["line3"] }}</li>
-          <li>{{ summary["line4"] }}</li>
-          <li>{{ summary["line5"] }}</li>
-          <li>{{ summary["line6"] }}</li>
-          <li>{{ summary["line7"] }}</li>
-          <li>{{ summary["line8"] }}</li>
-        </ol>
-        <p class="asof">as_of: {{ summary["as_of"] }} / model: {{ summary["model"] }}</p>
+        <h2>요약</h2>
+        {% if summary_sections %}
+          {% for section in summary_sections %}
+          <div class="summary-section">
+            <h3>{{ section["title"] }}</h3>
+            <ul class="source-list summary-items">
+              {% for item in section["items"] %}
+              <li>
+                <p class="summary-text">{{ item["text"] }}</p>
+                {% if item["sources"] %}
+                <div class="summary-links">
+                  {% for src in item["sources"] %}
+                  <a href="{{ src['url'] }}" target="_blank" rel="noreferrer" title="{{ src['source'] }}">
+                    {{ src["title"] }}
+                  </a>
+                  {% endfor %}
+                </div>
+                {% else %}
+                <small>연결된 출처 없음</small>
+                {% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endfor %}
+          <p class="asof">as_of: {{ summary["as_of"] }} / model: {{ summary["model"] }}</p>
         {% else %}
         <p>요약이 아직 생성되지 않았습니다.</p>
         {% endif %}
       </section>
 
       <section class="panel">
-        <h2>요약 근거 출처</h2>
-        {% if source_rows %}
+        <h2>재무 스냅샷</h2>
+        {% if stock.financial %}
         <ul class="source-list">
-          {% for row in source_rows %}
-          <li>
-            <span class="badge">line {{ row["line_nos_label"] }}</span>
-            {% if row["duplicate_count"] > 1 %}
-            <span class="badge duplicate">중복 {{ row["duplicate_count"] }}건 묶음</span>
-            {% endif %}
-            <a href="{{ row['url'] }}" target="_blank" rel="noreferrer">{{ row["title"] }}</a>
-            <small>{{ row["source"] }} / {{ row["published_at"] or "-" }}</small>
-          </li>
-          {% endfor %}
+          <li><span class="badge">PER</span> <small>{{ stock.financial["per_display"] }}</small></li>
+          <li><span class="badge">PBR</span> <small>{{ stock.financial["pbr_display"] }}</small></li>
+          <li><span class="badge">EPS</span> <small>{{ stock.financial["eps_display"] }}</small></li>
+          <li><span class="badge">ROE (%)</span> <small>{{ stock.financial["roe_display"] }}</small></li>
+          <li><span class="badge">Market Cap</span> <small>{{ stock.financial["market_cap_display"] }}</small></li>
         </ul>
+        <p class="asof">as_of: {{ stock.financial["as_of_display"] }} / source: {{ stock.financial["source_display"] }}</p>
         {% else %}
-        <p>근거 출처 매핑 데이터가 없습니다.</p>
+        <p>재무 스냅샷이 아직 수집되지 않았습니다.</p>
         {% endif %}
       </section>
 
       <section class="panel">
         <h2>최근 수집 문서</h2>
-        <ul class="source-list">
-          {% for row in doc_rows %}
-          <li>
-            <span class="badge">{{ row["doc_type"] }}</span>
-            <a href="{{ row['url'] }}" target="_blank" rel="noreferrer">{{ row["title"] }}</a>
-            <small>{{ row["source"] }} / {{ row["published_at"] or "-" }}</small>
-          </li>
-          {% endfor %}
-        </ul>
+
+        <div class="doc-group">
+          <h3>최근 뉴스</h3>
+          {% if news_rows %}
+          <ul class="source-list">
+            {% for row in news_rows %}
+            <li class="doc-item-news{% if loop.index > doc_initial_limit %} doc-hidden-news{% endif %}">
+              <span class="badge">news</span>
+              <a href="{{ row['url'] }}" target="_blank" rel="noreferrer">{{ row["title"] }}</a>
+              <small>{{ row["source"] }} / {{ row["published_at"] or "-" }}</small>
+            </li>
+            {% endfor %}
+          </ul>
+          {% if news_rows|length > doc_initial_limit %}
+          <button id="load-more-news" type="button">뉴스 더보기</button>
+          {% endif %}
+          {% else %}
+          <p>최근 뉴스가 없습니다.</p>
+          {% endif %}
+        </div>
+
+        <div class="doc-group">
+          <h3>최근 리포트</h3>
+          {% if report_rows %}
+          <ul class="source-list">
+            {% for row in report_rows %}
+            <li class="doc-item-report{% if loop.index > doc_initial_limit %} doc-hidden-report{% endif %}">
+              <span class="badge">report</span>
+              <a href="{{ row['url'] }}" target="_blank" rel="noreferrer">{{ row["title"] }}</a>
+              <small>{{ row["source"] }} / {{ row["published_at"] or "-" }}</small>
+            </li>
+            {% endfor %}
+          </ul>
+          {% if report_rows|length > doc_initial_limit %}
+          <button id="load-more-report" type="button">리포트 더보기</button>
+          {% endif %}
+          {% else %}
+          <p>최근 리포트가 없습니다.</p>
+          {% endif %}
+        </div>
       </section>
     </main>
+
+    {% if news_rows|length > doc_initial_limit or report_rows|length > doc_initial_limit %}
+    <script>
+      const step = 10;
+
+      const bindLoadMore = (buttonId, hiddenClass) => {
+        const button = document.getElementById(buttonId);
+        if (!button) return;
+
+        const hiddenItems = () => Array.from(document.querySelectorAll("." + hiddenClass));
+        button.addEventListener("click", () => {
+          const remain = hiddenItems();
+          remain.slice(0, step).forEach((el) => el.classList.remove(hiddenClass));
+          if (hiddenItems().length === 0) {
+            button.style.display = "none";
+          }
+        });
+      };
+
+      bindLoadMore("load-more-news", "doc-hidden-news");
+      bindLoadMore("load-more-report", "doc-hidden-report");
+    </script>
+    {% endif %}
   </body>
 </html>

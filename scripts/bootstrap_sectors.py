@@ -10,13 +10,10 @@ if str(ROOT) not in sys.path:
 from stock_mvp.config import load_settings
 from stock_mvp.database import connect, init_db
 from stock_mvp.sector_mapping import sync_sector_mapping_for_active_stocks
-from stock_mvp.universe import UniverseRefresher
 
 
 def main() -> None:
     settings = load_settings()
-    refresher = UniverseRefresher(settings)
-    result = refresher.refresh_all(kr_limit=100, us_limit=100)
     with connect(settings.db_path) as conn:
         init_db(conn)
         mapped_stock_count, mapped_sector_count = sync_sector_mapping_for_active_stocks(
@@ -24,11 +21,9 @@ def main() -> None:
             settings=settings,
             refresh_kr_external=True,
         )
-    print("Universe refresh done")
-    print(f"kr_requested={result.kr_requested}")
-    print(f"kr_active={result.kr_active}")
-    print(f"us_requested={result.us_requested}")
-    print(f"us_active={result.us_active}")
+        sector_count = int(conn.execute("SELECT COUNT(*) AS cnt FROM sectors WHERE is_active = 1").fetchone()["cnt"])
+    print(f"Sector taxonomy synced at: {settings.db_path}")
+    print(f"active_sector_count={sector_count}")
     print(f"mapped_stock_count={mapped_stock_count}")
     print(f"mapped_sector_count={mapped_sector_count}")
 

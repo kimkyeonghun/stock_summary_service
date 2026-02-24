@@ -34,6 +34,9 @@ class BaseCrawler(ABC):
         kwargs.setdefault("verify", self.verify)
         return self.session.get(url, **kwargs)
 
+    def reset_run_state(self) -> None:
+        return None
+
     @abstractmethod
     def collect(self, stock: Stock, limit: int) -> list[CollectedDocument]:
         raise NotImplementedError

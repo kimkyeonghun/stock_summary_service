@@ -112,7 +112,16 @@ def normalize_url(url: str) -> str:
         if report_idx:
             return f"https://consensus.hankyung.com/analysis/downpdf?report_idx={report_idx}"
 
+    # Canonicalize Naver finance research report URL.
+    if "finance.naver.com" in host and "company_read.naver" in path.lower():
+        nid = _first_query_value(query, "nid")
+        if nid:
+            return f"https://finance.naver.com/research/company_read.naver?nid={nid}"
+        path = "/research/company_read.naver"
+
     filtered = {k: v for k, v in query.items() if k.lower() not in TRACKING_QUERY_KEYS}
+    if "finance.naver.com" in host and "company_read.naver" in path.lower():
+        filtered = {k: v for k, v in filtered.items() if k.lower() != "page"}
     query_str = urlencode(sorted((k, v[0]) for k, v in filtered.items() if v), doseq=True)
     return urlunsplit((parts.scheme.lower() or "https", host, path, query_str, ""))
 

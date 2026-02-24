@@ -170,6 +170,15 @@ button,
   line-height: 1.55;
 }
 
+.summary-section {
+  margin-top: 16px;
+}
+
+.summary-section h3 {
+  margin-bottom: 8px;
+  font-size: 1rem;
+}
+
 .source-list {
   list-style: none;
   padding: 0;
@@ -196,6 +205,36 @@ button,
   color: var(--muted);
 }
 
+.summary-text {
+  margin: 0;
+  line-height: 1.6;
+  color: #0f172a;
+}
+
+.summary-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.summary-links a {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  background: #f8fafc;
+}
+
+.doc-group {
+  margin-top: 14px;
+}
+
+.doc-group h3 {
+  margin-bottom: 8px;
+  font-size: 0.98rem;
+}
+
 .badge {
   display: inline-block;
   justify-self: start;
@@ -210,6 +249,18 @@ button,
 .badge.duplicate {
   background: #fee2e2;
   color: #b91c1c;
+}
+
+.doc-hidden {
+  display: none !important;
+}
+
+.doc-hidden-news {
+  display: none !important;
+}
+
+.doc-hidden-report {
+  display: none !important;
 }
 
 @keyframes rise {

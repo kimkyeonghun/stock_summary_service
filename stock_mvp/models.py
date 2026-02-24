@@ -40,3 +40,44 @@ class GeneratedSummary:
     as_of: datetime
     lines: list[SummaryLine]
     model: str
+
+
+@dataclass(frozen=True)
+class Sector:
+    sector_code: str
+    sector_name_ko: str
+    sector_name_en: str
+    taxonomy_version: str = "v1"
+    is_active: bool = True
+
+
+@dataclass(frozen=True)
+class StockSectorMap:
+    stock_code: str
+    sector_code: str
+    mapping_source: str
+    confidence: float
+    as_of: datetime
+
+
+@dataclass(frozen=True)
+class SectorGeneratedSummary:
+    sector_code: str
+    as_of: datetime
+    lines: list[SummaryLine]
+    sentiment_label: str
+    sentiment_confidence: float
+    model: str
+
+
+@dataclass(frozen=True)
+class FinancialSnapshot:
+    stock_code: str
+    as_of: datetime
+    source: str
+    per: float | None
+    pbr: float | None
+    eps: float | None
+    roe: float | None
+    market_cap: int | None
+    currency: str

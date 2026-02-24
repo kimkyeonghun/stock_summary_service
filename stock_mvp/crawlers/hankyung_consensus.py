@@ -19,8 +19,10 @@ class HankyungConsensusCrawler(BaseCrawler):
 
     def __init__(self, settings):
         super().__init__(settings)
-        if settings.consensus_cookie:
-            self.session.headers.update({"Cookie": settings.consensus_cookie})
+        self._page_rows_cache: dict[int, list[dict[str, object]]] = {}
+
+    def reset_run_state(self) -> None:
+        self._page_rows_cache.clear()
 
     def collect(self, stock: Stock, limit: int) -> list[CollectedDocument]:
         if stock.market != "KR":
@@ -45,44 +47,68 @@ class HankyungConsensusCrawler(BaseCrawler):
         return docs
 
     def _collect_with_params(self, stock: Stock, params: dict[str, str], limit: int) -> list[CollectedDocument]:
-        url = f"{self.base_url}{self.list_path}"
-        response = self._get(url, params=params)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        rows = soup.select("table tbody tr")
+        try:
+            page = int(str(params.get("now_page") or "1"))
+        except ValueError:
+            page = 1
+        rows = self._load_page_rows(page)
         docs: list[CollectedDocument] = []
-
-        if rows:
-            for row in rows:
-                link = row.select_one("a[href]")
-                if not link:
-                    continue
-                cells = row.select("td")
-                title = compact_text(cells[1].get_text(" ", strip=True) if len(cells) > 1 else link.get_text(" ", strip=True))
-                href = link.get("href")
-                if not href:
-                    continue
-                full_url = urljoin(self.base_url, href)
-                row_text = compact_text(row.get_text(" ", strip=True))
-                if not self._looks_related(stock, title, row_text):
-                    continue
-                published_at = self._parse_date_from_text(row_text)
-                docs.append(
-                    CollectedDocument(
-                        stock_code=stock.code,
-                        source=self.source,
-                        doc_type=self.doc_type,
-                        title=title,
-                        url=full_url,
-                        published_at=published_at,
-                        body=row_text,
-                    )
+        for row in rows:
+            title = str(row.get("title") or "")
+            full_url = str(row.get("url") or "")
+            row_text = str(row.get("row_text") or "")
+            published_at = row.get("published_at")
+            if not self._looks_related(stock, title, row_text):
+                continue
+            docs.append(
+                CollectedDocument(
+                    stock_code=stock.code,
+                    source=self.source,
+                    doc_type=self.doc_type,
+                    title=title,
+                    url=full_url,
+                    published_at=published_at,
+                    body=row_text,
                 )
-                if len(docs) >= limit:
-                    return docs
+            )
+            if len(docs) >= limit:
+                return docs
 
         return docs
+
+    def _load_page_rows(self, page: int) -> list[dict[str, object]]:
+        cached = self._page_rows_cache.get(page)
+        if cached is not None:
+            return cached
+        url = f"{self.base_url}{self.list_path}"
+        response = self._get(
+            url,
+            params={"report_type": "CO", "pagenum": "20", "now_page": str(page)},
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        parsed_rows: list[dict[str, object]] = []
+        for row in soup.select("table tbody tr"):
+            link = row.select_one("a[href]")
+            if not link:
+                continue
+            cells = row.select("td")
+            title = compact_text(cells[1].get_text(" ", strip=True) if len(cells) > 1 else link.get_text(" ", strip=True))
+            href = link.get("href")
+            if not href:
+                continue
+            full_url = urljoin(self.base_url, href)
+            row_text = compact_text(row.get_text(" ", strip=True))
+            parsed_rows.append(
+                {
+                    "title": title,
+                    "url": full_url,
+                    "row_text": row_text,
+                    "published_at": self._parse_date_from_text(row_text),
+                }
+            )
+        self._page_rows_cache[page] = parsed_rows
+        return parsed_rows
 
     @staticmethod
     def _looks_related(stock: Stock, *texts: str) -> bool:

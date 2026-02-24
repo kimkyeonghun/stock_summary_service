@@ -4,7 +4,6 @@ Private-use stock information MVP for beginner investors.
 
 This project collects:
 - Naver News items by stock keyword
-- Hankyung Consensus report items (best-effort scraper)
 - Naver Finance Research company report items (KR)
 - SEC EDGAR filing items for US tickers (free-first)
 
@@ -21,6 +20,14 @@ Then it creates:
 - Optional scheduled collection
 - Optional Telegram morning brief delivery
 - Universe refresh for KR top-100 and US large caps
+- Sector taxonomy + multi-sector mapping per stock (N>=1)
+  - KR primary source: Naver upjong crawl
+  - US fallback: rule-based mapping (when external theme API is unavailable)
+- Sector-level deduplicated document aggregation (M2-T02 baseline)
+- Sector-level 8-line summaries + sentiment (LLM-first, rule fallback)
+- Financial snapshots (PER/PBR/EPS/ROE/Market Cap) for KR/US
+- Stock summary format: conclusion/evidence/risk/checkpoints/final sentiment
+- Stock detail: latest 10 documents first, with "load more" for additional items
 
 ## Quick start
 
@@ -47,13 +54,53 @@ If your environment has SSL inspection/corporate certificates, set:
 python scripts/bootstrap_db.py
 ```
 
-5. Run one collection pass:
+5. (Recommended) Sync sector taxonomy and stock-sector mappings:
+
+```bash
+python scripts/bootstrap_sectors.py
+```
+
+`bootstrap_sectors.py` fetches KR sector mappings from:
+`https://finance.naver.com/sise/sise_group.naver?type=upjong`
+
+6. Run one collection pass:
 
 ```bash
 python scripts/run_collect.py
 ```
 
-6. Start web app:
+Skip sector-level steps for faster ad-hoc runs:
+
+```bash
+python scripts/run_collect.py --stock-codes "005930,AAPL" --skip-sector
+```
+
+Run only KR or US market universe:
+
+```bash
+python scripts/run_collect.py --market KR
+python scripts/run_collect.py --market US --skip-sector
+```
+
+You can rebuild sector-level deduped documents directly:
+
+```bash
+python scripts/run_sector_aggregate.py --lookback-days 7 --top 20
+```
+
+Generate sector summaries directly:
+
+```bash
+python scripts/run_sector_summarize.py --lookback-days 7 --limit 30
+```
+
+Collect financial snapshots directly:
+
+```bash
+python scripts/run_financials.py --stock-codes "005930,AAPL"
+```
+
+7. Start web app:
 
 ```bash
 python scripts/run_server.py
@@ -61,22 +108,24 @@ python scripts/run_server.py
 
 Open `http://127.0.0.1:5000`.
 
-7. (Optional) Send morning brief manually:
+8. (Optional) Send morning brief manually:
 
 ```bash
 python scripts/run_brief.py
 ```
 
-8. (Optional) Refresh KR/US universe manually:
+9. (Optional) Refresh KR/US universe manually:
 
 ```bash
 python scripts/run_universe_refresh.py
 ```
 
+`run_universe_refresh.py` also refreshes sector mappings for the active universe
+and attempts KR upjong-based sector mapping.
+
 ## Notes on login crawling
 
-For login-required pages, this code supports custom cookies via `.env` (`CONSENSUS_COOKIE`).
-If the target site requires interactive login or anti-bot checks, keep to accessible pages only.
+If a target site requires interactive login or anti-bot checks, keep to accessible pages only.
 
 For Naver news stability, you can optionally set:
 - `NAVER_CLIENT_ID`
@@ -85,13 +134,13 @@ If set, the collector uses Naver OpenAPI first, then falls back to HTML parsing.
 
 Source-specific collection limits:
 - `NAVER_NEWS_PER_STOCK` (default `20`)
-- `HANKYUNG_REPORTS_PER_STOCK` (default `8`)
 - `NAVER_FINANCE_REPORTS_PER_STOCK` (default `8`)
 - `SEC_REPORTS_PER_STOCK` (default `6`)
 
 Scheduler-related env vars:
 - `ENABLE_SCHEDULER=true`
 - `COLLECT_SCHEDULE_KST=00:00,06:00,12:00,18:00`
+- `SECTOR_REFRESH_TIME_KST=00:00` (run sector aggregation/summaries once per day at this collect slot)
 - `MORNING_BRIEF_TIME_KST=07:00`
 - `UNIVERSE_REFRESH_DAY_OF_MONTH=1`
 - `UNIVERSE_REFRESH_TIME_KST=05:30`
@@ -106,9 +155,34 @@ Telegram env vars:
 SEC env vars:
 - `SEC_USER_AGENT=stock-mvp/0.1 (contact: your-email@example.com)`
 
+LLM env vars:
+- `LLM_PROVIDER=none|ollama|gemini|openai|openrouter`
+- `LLM_MODEL=...`
+- `LLM_API_KEY=...` (or provider-specific `GEMINI_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY`)
+- `LLM_API_BASE=` (optional override)
+- `LLM_TEMPERATURE=0.2`
+- `LLM_MAX_TOKENS=900`
+- `LLM_REQUEST_TIMEOUT_SEC=30`
+- `LLM_TRUST_ENV=false` (set `true` only if you intentionally want system proxy env for LLM calls)
+- `ENABLE_FINANCIAL_COLLECTION=true`
+- `FINANCIAL_REFRESH_MIN_HOURS=20`
+
 Ops endpoints:
 - `GET /ops/runs?limit=30` (latest pipeline runs)
 - `GET /ops/runs/<run_id>` (crawler-level run stats)
+- `GET /ops/sector-summaries?limit=30` (latest sector summaries)
+- `GET /ops/sector-summaries/<sector_code>` (latest sector summary + source mapping)
+- `GET /ops/financials?limit=120&sort=as_of_desc` (latest financial snapshots)
+- `GET /ops/financials?market=KR&limit=100` (market filter)
+- `GET /ops/financials?stock_code=005930` (stock filter)
+- `GET /ops/financials?sort=market_rank` (original market/rank order)
+
+Financial snapshot check examples:
+
+```bash
+python scripts/run_financials.py --stock-codes "005930,AAPL"
+python scripts/run_collect.py --stock-codes "005930,AAPL"
+```
 
 ## Disclaimer
 
