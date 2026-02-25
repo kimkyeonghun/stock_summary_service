@@ -1,4 +1,4 @@
-# Stock Info MVP/Phase-2 PRD (v0.3)
+# BriefAlpha / Phase-2 PRD (v0.3)
 
 - Date: 2026-02-23
 - Owner: hanati

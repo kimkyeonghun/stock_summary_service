@@ -1,145 +1,168 @@
-<!doctype html>
-<html lang="ko">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{{ stock.name }} - Stock Info MVP</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap"
-      rel="stylesheet"
-    />
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
-  </head>
-  <body>
-    <main class="container">
-      <section class="hero compact">
-        <div>
-          <p class="eyebrow">{{ stock.code }}</p>
-          <h1>{{ stock.name }}</h1>
-          <p class="sub">검색 키워드: {{ ", ".join(stock.queries) }}</p>
-          <p class="sub">섹터: {{ ", ".join(stock.sectors) if stock.sectors else "-" }}</p>
-        </div>
-        <div class="actions">
-          <a class="back-link" href="{{ url_for('index') }}">목록으로 돌아가기</a>
-        </div>
-      </section>
+﻿{% extends "base.html" %}
 
-      <section class="panel">
-        <h2>요약</h2>
-        {% if summary_sections %}
-          {% for section in summary_sections %}
-          <div class="summary-section">
-            <h3>{{ section["title"] }}</h3>
-            <ul class="source-list summary-items">
-              {% for item in section["items"] %}
-              <li>
-                <p class="summary-text">{{ item["text"] }}</p>
-                {% if item["sources"] %}
-                <div class="summary-links">
-                  {% for src in item["sources"] %}
-                  <a href="{{ src['url'] }}" target="_blank" rel="noreferrer" title="{{ src['source'] }}">
-                    {{ src["title"] }}
-                  </a>
-                  {% endfor %}
-                </div>
-                {% else %}
-                <small>연결된 출처 없음</small>
-                {% endif %}
-              </li>
-              {% endfor %}
-            </ul>
-          </div>
-          {% endfor %}
-          <p class="asof">as_of: {{ summary["as_of"] }} / model: {{ summary["model"] }}</p>
-        {% else %}
-        <p>요약이 아직 생성되지 않았습니다.</p>
-        {% endif %}
-      </section>
+{% block title %}{{ stock.name }} - {{ current_market }} - BriefAlpha{% endblock %}
 
-      <section class="panel">
-        <h2>재무 스냅샷</h2>
-        {% if stock.financial %}
-        <ul class="source-list">
-          <li><span class="badge">PER</span> <small>{{ stock.financial["per_display"] }}</small></li>
-          <li><span class="badge">PBR</span> <small>{{ stock.financial["pbr_display"] }}</small></li>
-          <li><span class="badge">EPS</span> <small>{{ stock.financial["eps_display"] }}</small></li>
-          <li><span class="badge">ROE (%)</span> <small>{{ stock.financial["roe_display"] }}</small></li>
-          <li><span class="badge">Market Cap</span> <small>{{ stock.financial["market_cap_display"] }}</small></li>
-        </ul>
-        <p class="asof">as_of: {{ stock.financial["as_of_display"] }} / source: {{ stock.financial["source_display"] }}</p>
-        {% else %}
-        <p>재무 스냅샷이 아직 수집되지 않았습니다.</p>
-        {% endif %}
-      </section>
+{% block content %}
+{% set is_kr = current_market == 'KR' %}
+{% set accent_btn_class = 'bg-indigo-600 hover:bg-indigo-500' if is_kr else 'bg-emerald-600 hover:bg-emerald-500' %}
+{% set accent_link_class = 'text-indigo-600 hover:text-indigo-500' if is_kr else 'text-emerald-600 hover:text-emerald-500' %}
+{% set accent_border_hover_class = 'hover:border-indigo-500 hover:text-indigo-500' if is_kr else 'hover:border-emerald-500 hover:text-emerald-500' %}
+<section class="space-y-6">
+  <div class="rounded-2xl bg-white p-6 shadow-sm">
+    <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div>
+        <p class="text-sm font-medium {% if is_kr %}text-indigo-600{% else %}text-emerald-600{% endif %}">{{ stock.code }}</p>
+        <h1 class="mt-1 text-2xl font-semibold text-gray-900">{{ stock.name }}</h1>
+        <p class="mt-2 text-sm text-gray-500">검색 키워드: {{ ", ".join(stock.queries) }}</p>
+        <p class="mt-1 text-sm text-gray-500">섹터: {{ ", ".join(stock.sectors) if stock.sectors else '-' }}</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <form method="post" action="{{ url_for('toggle_watchlist_stock', market=current_market.lower(), code=stock.code) }}">
+          <input type="hidden" name="next" value="{{ request.path }}" />
+          {% if is_subscribed %}
+          <button type="submit" class="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-900 {{ accent_border_hover_class }}">Unsubscribe</button>
+          {% else %}
+          <button type="submit" class="rounded-xl px-4 py-2 text-sm font-medium text-white {{ accent_btn_class }}">Subscribe</button>
+          {% endif %}
+        </form>
+      </div>
+    </div>
+  </div>
 
-      <section class="panel">
-        <h2>최근 수집 문서</h2>
-
-        <div class="doc-group">
-          <h3>최근 뉴스</h3>
-          {% if news_rows %}
-          <ul class="source-list">
-            {% for row in news_rows %}
-            <li class="doc-item-news{% if loop.index > doc_initial_limit %} doc-hidden-news{% endif %}">
-              <span class="badge">news</span>
-              <a href="{{ row['url'] }}" target="_blank" rel="noreferrer">{{ row["title"] }}</a>
-              <small>{{ row["source"] }} / {{ row["published_at"] or "-" }}</small>
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">요약</h2>
+    {% if summary_sections %}
+      <div class="mt-4 space-y-4">
+        {% for section in summary_sections %}
+        <article class="rounded-xl border border-gray-200 p-4">
+          <h3 class="text-sm font-semibold text-gray-900">{{ section['title'] }}</h3>
+          <ul class="mt-3 space-y-3">
+            {% for item in section['items'] %}
+            <li class="rounded-lg bg-white p-3">
+              <p class="text-sm text-gray-900">{{ item['text'] }}</p>
+              {% if item['sources'] %}
+              <div class="mt-2 flex flex-wrap gap-2">
+                {% for src in item['sources'] %}
+                <a href="{{ src['url'] }}" target="_blank" rel="noreferrer" class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-900 {{ accent_link_class }}">{{ src['title'] }}</a>
+                {% endfor %}
+              </div>
+              {% else %}
+              <p class="mt-2 text-xs text-gray-500">연결된 출처가 없습니다.</p>
+              {% endif %}
             </li>
             {% endfor %}
           </ul>
-          {% if news_rows|length > doc_initial_limit %}
-          <button id="load-more-news" type="button">뉴스 더보기</button>
-          {% endif %}
-          {% else %}
-          <p>최근 뉴스가 없습니다.</p>
-          {% endif %}
-        </div>
-
-        <div class="doc-group">
-          <h3>최근 리포트</h3>
-          {% if report_rows %}
-          <ul class="source-list">
-            {% for row in report_rows %}
-            <li class="doc-item-report{% if loop.index > doc_initial_limit %} doc-hidden-report{% endif %}">
-              <span class="badge">report</span>
-              <a href="{{ row['url'] }}" target="_blank" rel="noreferrer">{{ row["title"] }}</a>
-              <small>{{ row["source"] }} / {{ row["published_at"] or "-" }}</small>
-            </li>
-            {% endfor %}
-          </ul>
-          {% if report_rows|length > doc_initial_limit %}
-          <button id="load-more-report" type="button">리포트 더보기</button>
-          {% endif %}
-          {% else %}
-          <p>최근 리포트가 없습니다.</p>
-          {% endif %}
-        </div>
-      </section>
-    </main>
-
-    {% if news_rows|length > doc_initial_limit or report_rows|length > doc_initial_limit %}
-    <script>
-      const step = 10;
-
-      const bindLoadMore = (buttonId, hiddenClass) => {
-        const button = document.getElementById(buttonId);
-        if (!button) return;
-
-        const hiddenItems = () => Array.from(document.querySelectorAll("." + hiddenClass));
-        button.addEventListener("click", () => {
-          const remain = hiddenItems();
-          remain.slice(0, step).forEach((el) => el.classList.remove(hiddenClass));
-          if (hiddenItems().length === 0) {
-            button.style.display = "none";
-          }
-        });
-      };
-
-      bindLoadMore("load-more-news", "doc-hidden-news");
-      bindLoadMore("load-more-report", "doc-hidden-report");
-    </script>
+        </article>
+        {% endfor %}
+      </div>
+      <p class="mt-4 text-xs text-gray-500">as_of: {{ summary['as_of'] }} / model: {{ summary['model'] }}</p>
+    {% else %}
+      <p class="mt-4 text-sm text-gray-500">요약이 아직 생성되지 않았습니다.</p>
     {% endif %}
-  </body>
-</html>
+  </section>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">섹터/재무 정보</h2>
+    {% if stock.sector_briefs %}
+      <div class="mt-4 grid gap-3 md:grid-cols-2">
+        {% for sector in stock.sector_briefs %}
+        <article class="rounded-xl border border-gray-200 p-3">
+          <div class="flex items-center justify-between gap-2">
+            <p class="text-sm font-semibold text-gray-900">{{ sector['sector_name'] }}</p>
+            <span class="rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-500">{{ sector['sector_code'] }}</span>
+          </div>
+          <p class="mt-2 text-sm text-gray-500">{{ sector['line1'] or '섹터 요약이 아직 없습니다.' }}</p>
+          <p class="mt-1 text-xs text-gray-500">{{ sector['as_of'] or '-' }}</p>
+        </article>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if stock.financial %}
+      <div class="mt-4 overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+          <tbody class="divide-y divide-gray-100 text-gray-900">
+            <tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">PER</th><td class="px-4 py-3">{{ stock.financial['per_display'] }}</td></tr>
+            <tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">PBR</th><td class="px-4 py-3">{{ stock.financial['pbr_display'] }}</td></tr>
+            <tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">EPS</th><td class="px-4 py-3">{{ stock.financial['eps_display'] }}</td></tr>
+            <tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">ROE</th><td class="px-4 py-3">{{ stock.financial['roe_display'] }}</td></tr>
+            <tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Market Cap</th><td class="px-4 py-3">{{ stock.financial['market_cap_display'] }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="mt-3 text-xs text-gray-500">as_of: {{ stock.financial['as_of_display'] }} / source: {{ stock.financial['source_display'] }}</p>
+    {% else %}
+      <p class="mt-4 text-sm text-gray-500">재무 데이터가 아직 수집되지 않았습니다.</p>
+    {% endif %}
+  </section>
+
+  <section class="grid gap-4 lg:grid-cols-2">
+    <article class="rounded-2xl bg-white p-6 shadow-sm">
+      <div class="flex items-center justify-between gap-3">
+        <h2 class="text-lg font-semibold text-gray-900">최근 뉴스</h2>
+        <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-500">{{ news_rows|length }}</span>
+      </div>
+      {% if news_rows %}
+      <ul class="mt-4 space-y-2">
+        {% for row in news_rows %}
+        <li class="news-item {% if loop.index > doc_initial_limit %}hidden extra-news{% endif %} rounded-xl border border-gray-200 p-3">
+          <a href="{{ row['url'] }}" target="_blank" rel="noreferrer" class="text-sm font-medium {{ accent_link_class }}">{{ row['title'] }}</a>
+          <p class="mt-1 text-xs text-gray-500">{{ row['source'] }} / {{ row['published_at'] or '-' }}</p>
+        </li>
+        {% endfor %}
+      </ul>
+      {% if news_rows|length > doc_initial_limit %}
+      <button id="load-more-news" type="button" class="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {{ accent_border_hover_class }}">더보기</button>
+      {% endif %}
+      {% else %}
+      <p class="mt-4 text-sm text-gray-500">뉴스가 없습니다.</p>
+      {% endif %}
+    </article>
+
+    <article class="rounded-2xl bg-white p-6 shadow-sm">
+      <div class="flex items-center justify-between gap-3">
+        <h2 class="text-lg font-semibold text-gray-900">최근 리포트</h2>
+        <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-500">{{ report_rows|length }}</span>
+      </div>
+      {% if report_rows %}
+      <ul class="mt-4 space-y-2">
+        {% for row in report_rows %}
+        <li class="report-item {% if loop.index > doc_initial_limit %}hidden extra-report{% endif %} rounded-xl border border-gray-200 p-3">
+          <a href="{{ row['url'] }}" target="_blank" rel="noreferrer" class="text-sm font-medium {{ accent_link_class }}">{{ row['title'] }}</a>
+          <p class="mt-1 text-xs text-gray-500">{{ row['source'] }} / {{ row['published_at'] or '-' }}</p>
+        </li>
+        {% endfor %}
+      </ul>
+      {% if report_rows|length > doc_initial_limit %}
+      <button id="load-more-report" type="button" class="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {{ accent_border_hover_class }}">더보기</button>
+      {% endif %}
+      {% else %}
+      <p class="mt-4 text-sm text-gray-500">리포트가 없습니다.</p>
+      {% endif %}
+    </article>
+  </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const revealBatch = (buttonId, selector, step) => {
+    const button = document.getElementById(buttonId);
+    if (!button) return;
+    button.addEventListener("click", () => {
+      const hiddenRows = Array.from(document.querySelectorAll(selector));
+      hiddenRows.slice(0, step).forEach((el) => {
+        el.classList.remove("hidden");
+        el.classList.remove("extra-news");
+        el.classList.remove("extra-report");
+      });
+      if (document.querySelectorAll(selector).length <= step) {
+        button.classList.add("hidden");
+      }
+    });
+  };
+
+  revealBatch("load-more-news", ".extra-news", 10);
+  revealBatch("load-more-report", ".extra-report", 10);
+</script>
+{% endblock %}

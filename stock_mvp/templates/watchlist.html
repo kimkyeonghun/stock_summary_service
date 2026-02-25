@@ -1,0 +1,336 @@
+﻿{% extends "base.html" %}
+
+{% block title %}{{ current_market }} Watchlist - BriefAlpha{% endblock %}
+
+{% block content %}
+{% set is_kr = current_market == 'KR' %}
+<section class="space-y-6">
+  <div class="rounded-2xl bg-white p-6 shadow-sm">
+    <h1 class="text-2xl font-semibold text-gray-900">{{ current_market }} Watchlist</h1>
+    <p class="mt-2 text-sm text-gray-500">세션 기반 임시 구독 모델입니다. 이후 DB 기반 사용자 구독으로 교체 가능합니다.</p>
+  </div>
+
+  <div class="rounded-2xl bg-white p-6 shadow-sm">
+    <label for="wl-search" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Search</label>
+    <input
+      id="wl-search"
+      type="text"
+      placeholder="코드/이름 검색 (예: 삼성 전자, aapl tech)"
+      class="w-full rounded-xl border border-gray-200 px-4 py-2 text-sm text-gray-900 {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none"
+    />
+    <p class="mt-2 text-xs text-gray-500">공백으로 여러 키워드를 입력하면 모두 포함되는 항목만 표시됩니다.</p>
+  </div>
+
+  <div class="grid gap-6 lg:grid-cols-2">
+    <section class="rounded-2xl bg-white p-6 shadow-sm">
+      <div class="flex items-center justify-between gap-3">
+        <h2 class="text-lg font-semibold text-gray-900">Tickers</h2>
+        <span id="stock-count" class="rounded-full px-3 py-1 text-xs font-medium {% if is_kr %}bg-indigo-50 text-indigo-600{% else %}bg-emerald-50 text-emerald-600{% endif %}">0 / {{ stocks|length }}</span>
+      </div>
+
+      {% if stocks %}
+      <div class="mt-4 grid gap-3">
+        <div id="stock-filter-tabs" class="inline-flex w-fit rounded-xl border border-gray-200 p-1">
+          <button type="button" data-filter="all" class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-900">전체</button>
+          <button type="button" data-filter="subscribed" class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500">구독중</button>
+          <button type="button" data-filter="unsubscribed" class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500">미구독</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <label for="stock-sort" class="text-xs font-semibold uppercase tracking-wide text-gray-500">Sort</label>
+          <select id="stock-sort" class="rounded-xl border border-gray-200 px-3 py-2 text-xs text-gray-900 {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none">
+            <option value="subscribed">구독 우선</option>
+            <option value="name">이름</option>
+            <option value="code">코드</option>
+          </select>
+          <button id="stock-order" type="button" class="rounded-xl border border-gray-200 px-3 py-2 text-xs font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-600{% else %}hover:border-emerald-500 hover:text-emerald-600{% endif %}">ASC</button>
+        </div>
+      </div>
+
+      <div id="stock-list" class="mt-4 max-h-[640px] space-y-2 overflow-y-auto pr-1">
+        {% for row in stocks %}
+        <article
+          data-item="stock"
+          data-code="{{ row['code']|lower }}"
+          data-name="{{ row['name']|lower }}"
+          data-keywords="{{ (row['code'] ~ ' ' ~ row['name'])|lower }}"
+          data-subscribed="{% if row['is_subscribed'] %}1{% else %}0{% endif %}"
+          class="flex items-center justify-between gap-3 rounded-xl border border-gray-200 p-3"
+        >
+          <div>
+            <div class="flex items-center gap-2">
+              <p class="text-sm font-semibold text-gray-900">{{ row['name'] }}</p>
+              {% if row['is_subscribed'] %}
+              <span class="rounded-full px-2 py-0.5 text-[10px] font-medium {% if is_kr %}bg-indigo-50 text-indigo-600{% else %}bg-emerald-50 text-emerald-600{% endif %}">Subscribed</span>
+              {% endif %}
+            </div>
+            <p class="text-xs text-gray-500">{{ row['code'] }}</p>
+          </div>
+          <form method="post" action="{{ url_for('toggle_watchlist_stock', market=current_market.lower(), code=row['code']) }}">
+            <input type="hidden" name="next" value="{{ request.path }}" />
+            {% if row['is_subscribed'] %}
+            <button type="submit" class="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-600{% else %}hover:border-emerald-500 hover:text-emerald-600{% endif %}">Unsubscribe</button>
+            {% else %}
+            <button type="submit" class="rounded-xl px-3 py-2 text-xs font-medium text-white {% if is_kr %}bg-indigo-600 hover:bg-indigo-500{% else %}bg-emerald-600 hover:bg-emerald-500{% endif %}">Subscribe</button>
+            {% endif %}
+          </form>
+        </article>
+        {% endfor %}
+      </div>
+      <p id="stock-empty" class="mt-4 hidden rounded-xl border border-dashed border-gray-300 p-4 text-center text-sm text-gray-500">검색/필터 조건과 일치하는 종목이 없습니다.</p>
+      {% else %}
+      <p class="mt-4 text-sm text-gray-500">표시할 종목이 없습니다.</p>
+      {% endif %}
+    </section>
+
+    <section class="rounded-2xl bg-white p-6 shadow-sm">
+      <div class="flex items-center justify-between gap-3">
+        <h2 class="text-lg font-semibold text-gray-900">Sectors</h2>
+        <span id="sector-count" class="rounded-full px-3 py-1 text-xs font-medium {% if is_kr %}bg-indigo-50 text-indigo-600{% else %}bg-emerald-50 text-emerald-600{% endif %}">0 / {{ sectors|length }}</span>
+      </div>
+
+      {% if sectors %}
+      <div class="mt-4 grid gap-3">
+        <div id="sector-filter-tabs" class="inline-flex w-fit rounded-xl border border-gray-200 p-1">
+          <button type="button" data-filter="all" class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-900">전체</button>
+          <button type="button" data-filter="subscribed" class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500">구독중</button>
+          <button type="button" data-filter="unsubscribed" class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500">미구독</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <label for="sector-sort" class="text-xs font-semibold uppercase tracking-wide text-gray-500">Sort</label>
+          <select id="sector-sort" class="rounded-xl border border-gray-200 px-3 py-2 text-xs text-gray-900 {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none">
+            <option value="subscribed">구독 우선</option>
+            <option value="name">이름</option>
+            <option value="code">코드</option>
+          </select>
+          <button id="sector-order" type="button" class="rounded-xl border border-gray-200 px-3 py-2 text-xs font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-600{% else %}hover:border-emerald-500 hover:text-emerald-600{% endif %}">ASC</button>
+        </div>
+      </div>
+
+      <div id="sector-list" class="mt-4 max-h-[640px] space-y-2 overflow-y-auto pr-1">
+        {% for row in sectors %}
+        <article
+          data-item="sector"
+          data-code="{{ row['sector_code']|lower }}"
+          data-name="{{ row['sector_name']|lower }}"
+          data-keywords="{{ (row['sector_code'] ~ ' ' ~ row['sector_name'])|lower }}"
+          data-subscribed="{% if row['is_subscribed'] %}1{% else %}0{% endif %}"
+          class="flex items-center justify-between gap-3 rounded-xl border border-gray-200 p-3"
+        >
+          <div>
+            <div class="flex items-center gap-2">
+              <p class="text-sm font-semibold text-gray-900">{{ row['sector_name'] }}</p>
+              {% if row['is_subscribed'] %}
+              <span class="rounded-full px-2 py-0.5 text-[10px] font-medium {% if is_kr %}bg-indigo-50 text-indigo-600{% else %}bg-emerald-50 text-emerald-600{% endif %}">Subscribed</span>
+              {% endif %}
+            </div>
+            <p class="text-xs text-gray-500">{{ row['sector_code'] }}</p>
+          </div>
+          <form method="post" action="{{ url_for('toggle_watchlist_sector', market=current_market.lower(), sector_code=row['sector_code']) }}">
+            <input type="hidden" name="next" value="{{ request.path }}" />
+            {% if row['is_subscribed'] %}
+            <button type="submit" class="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-600{% else %}hover:border-emerald-500 hover:text-emerald-600{% endif %}">Unsubscribe</button>
+            {% else %}
+            <button type="submit" class="rounded-xl px-3 py-2 text-xs font-medium text-white {% if is_kr %}bg-indigo-600 hover:bg-indigo-500{% else %}bg-emerald-600 hover:bg-emerald-500{% endif %}">Subscribe</button>
+            {% endif %}
+          </form>
+        </article>
+        {% endfor %}
+      </div>
+      <p id="sector-empty" class="mt-4 hidden rounded-xl border border-dashed border-gray-300 p-4 text-center text-sm text-gray-500">검색/필터 조건과 일치하는 섹터가 없습니다.</p>
+      {% else %}
+      <div class="mt-4 rounded-xl border border-dashed border-gray-300 p-6 text-center">
+        <p class="text-sm font-medium text-gray-900">No sectors available</p>
+        <p class="mt-1 text-xs text-gray-500">{{ current_market }} 시장 섹터 데이터가 아직 없습니다.</p>
+      </div>
+      {% endif %}
+    </section>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const searchInput = document.getElementById("wl-search");
+  const tabActiveClass = "{{ 'rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white' if is_kr else 'rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white' }}";
+  const tabInactiveClass = "{{ 'rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-indigo-600' if is_kr else 'rounded-lg px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-emerald-600' }}";
+
+  const sectionConfigs = {
+    stock: {
+      keyPrefix: "stock",
+      items: Array.from(document.querySelectorAll("#stock-list [data-item='stock']")),
+      countEl: document.getElementById("stock-count"),
+      emptyEl: document.getElementById("stock-empty"),
+      tabRoot: document.getElementById("stock-filter-tabs"),
+      sortEl: document.getElementById("stock-sort"),
+      orderBtn: document.getElementById("stock-order"),
+      total: {{ stocks|length }},
+      state: { filter: "all", sort: "subscribed", order: "asc" },
+    },
+    sector: {
+      keyPrefix: "sector",
+      items: Array.from(document.querySelectorAll("#sector-list [data-item='sector']")),
+      countEl: document.getElementById("sector-count"),
+      emptyEl: document.getElementById("sector-empty"),
+      tabRoot: document.getElementById("sector-filter-tabs"),
+      sortEl: document.getElementById("sector-sort"),
+      orderBtn: document.getElementById("sector-order"),
+      total: {{ sectors|length }},
+      state: { filter: "all", sort: "subscribed", order: "asc" },
+    },
+  };
+
+  const readQueryState = () => {
+    const params = new URLSearchParams(window.location.search);
+    const search = (params.get("q") || "").trim();
+
+    Object.values(sectionConfigs).forEach((cfg) => {
+      const filter = (params.get(`${cfg.keyPrefix}_filter`) || "all").toLowerCase();
+      const sort = (params.get(`${cfg.keyPrefix}_sort`) || "subscribed").toLowerCase();
+      const order = (params.get(`${cfg.keyPrefix}_order`) || "asc").toLowerCase();
+      cfg.state.filter = ["all", "subscribed", "unsubscribed"].includes(filter) ? filter : "all";
+      cfg.state.sort = ["subscribed", "name", "code"].includes(sort) ? sort : "subscribed";
+      cfg.state.order = ["asc", "desc"].includes(order) ? order : "asc";
+
+      if (cfg.sortEl) cfg.sortEl.value = cfg.state.sort;
+      if (cfg.orderBtn) cfg.orderBtn.textContent = cfg.state.order.toUpperCase();
+      renderTabs(cfg);
+    });
+
+    if (searchInput) searchInput.value = search;
+  };
+
+  const writeQueryState = () => {
+    const params = new URLSearchParams();
+    const q = (searchInput?.value || "").trim();
+    if (q) params.set("q", q);
+
+    Object.values(sectionConfigs).forEach((cfg) => {
+      params.set(`${cfg.keyPrefix}_filter`, cfg.state.filter);
+      params.set(`${cfg.keyPrefix}_sort`, cfg.state.sort);
+      params.set(`${cfg.keyPrefix}_order`, cfg.state.order);
+    });
+
+    const query = params.toString();
+    const next = query ? `${window.location.pathname}?${query}` : window.location.pathname;
+    history.replaceState(null, "", next);
+  };
+
+  const tokenize = (value) =>
+    String(value || "")
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+
+  const passesFilter = (el, cfg) => {
+    const subscribed = el.dataset.subscribed === "1";
+    if (cfg.state.filter === "subscribed") return subscribed;
+    if (cfg.state.filter === "unsubscribed") return !subscribed;
+    return true;
+  };
+
+  const passesSearch = (el, searchTokens) => {
+    if (!searchTokens.length) return true;
+    const keywords = String(el.dataset.keywords || "").toLowerCase();
+    return searchTokens.every((token) => keywords.includes(token));
+  };
+
+  const compareItem = (a, b, cfg) => {
+    const aSubscribed = a.dataset.subscribed === "1" ? 1 : 0;
+    const bSubscribed = b.dataset.subscribed === "1" ? 1 : 0;
+    const aName = String(a.dataset.name || "");
+    const bName = String(b.dataset.name || "");
+    const aCode = String(a.dataset.code || "");
+    const bCode = String(b.dataset.code || "");
+
+    let result = 0;
+    if (cfg.state.sort === "subscribed") {
+      result = bSubscribed - aSubscribed;
+      if (result === 0) result = aName.localeCompare(bName, "ko");
+      if (result === 0) result = aCode.localeCompare(bCode, "ko");
+    } else if (cfg.state.sort === "name") {
+      result = aName.localeCompare(bName, "ko");
+      if (result === 0) result = aCode.localeCompare(bCode, "ko");
+    } else {
+      result = aCode.localeCompare(bCode, "ko");
+      if (result === 0) result = aName.localeCompare(bName, "ko");
+    }
+
+    return cfg.state.order === "desc" ? -result : result;
+  };
+
+  const renderTabs = (cfg) => {
+    if (!cfg.tabRoot) return;
+    Array.from(cfg.tabRoot.querySelectorAll("button[data-filter]")).forEach((btn) => {
+      const active = btn.dataset.filter === cfg.state.filter;
+      btn.className = active ? tabActiveClass : tabInactiveClass;
+    });
+  };
+
+  const applySection = (cfg, searchTokens) => {
+    if (!cfg.items.length) return;
+
+    const visibleItems = cfg.items.filter((el) => passesFilter(el, cfg) && passesSearch(el, searchTokens));
+    visibleItems.sort((a, b) => compareItem(a, b, cfg));
+
+    cfg.items.forEach((el) => el.classList.add("hidden"));
+    visibleItems.forEach((el) => {
+      el.classList.remove("hidden");
+      el.parentNode.appendChild(el);
+    });
+
+    if (cfg.countEl) cfg.countEl.textContent = `${visibleItems.length} / ${cfg.total}`;
+    if (cfg.emptyEl) cfg.emptyEl.classList.toggle("hidden", visibleItems.length !== 0);
+  };
+
+  const applyAll = () => {
+    const searchTokens = tokenize(searchInput?.value || "");
+    Object.values(sectionConfigs).forEach((cfg) => applySection(cfg, searchTokens));
+    writeQueryState();
+  };
+
+  const debounce = (fn, waitMs) => {
+    let timer = null;
+    return (...args) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), waitMs);
+    };
+  };
+
+  const bindSectionEvents = (cfg) => {
+    if (cfg.tabRoot) {
+      cfg.tabRoot.addEventListener("click", (event) => {
+        const target = event.target.closest("button[data-filter]");
+        if (!target) return;
+        cfg.state.filter = target.dataset.filter || "all";
+        renderTabs(cfg);
+        applyAll();
+      });
+    }
+
+    if (cfg.sortEl) {
+      cfg.sortEl.addEventListener("change", () => {
+        cfg.state.sort = cfg.sortEl.value;
+        applyAll();
+      });
+    }
+
+    if (cfg.orderBtn) {
+      cfg.orderBtn.addEventListener("click", () => {
+        cfg.state.order = cfg.state.order === "asc" ? "desc" : "asc";
+        cfg.orderBtn.textContent = cfg.state.order.toUpperCase();
+        applyAll();
+      });
+    }
+  };
+
+  readQueryState();
+  Object.values(sectionConfigs).forEach((cfg) => bindSectionEvents(cfg));
+
+  if (searchInput) {
+    searchInput.addEventListener("input", debounce(applyAll, 150));
+  }
+
+  applyAll();
+</script>
+{% endblock %}

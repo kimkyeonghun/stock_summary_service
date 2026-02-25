@@ -1,0 +1,602 @@
+﻿{% extends "base.html" %}
+
+{% block title %}{{ current_market }} Backtest - BriefAlpha{% endblock %}
+
+{% block content %}
+{% set is_kr = current_market == 'KR' %}
+<section class="space-y-6">
+  <div class="rounded-2xl bg-white p-6 shadow-sm">
+    <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div>
+        <h1 class="text-2xl font-semibold text-gray-900">{{ current_market }} Backtest Lab</h1>
+        <p class="mt-2 text-sm text-gray-500">시장 분리 기준으로 포트폴리오/벤치마크를 비교합니다.</p>
+      </div>
+      <span class="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium {% if is_kr %}bg-indigo-50 text-indigo-600{% else %}bg-emerald-50 text-emerald-600{% endif %}">Market: {{ current_market }}</span>
+    </div>
+  </div>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">Run Backtest</h2>
+    <form id="backtest-form" class="mt-4 space-y-4">
+      <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div>
+          <label for="bt-preset" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Preset</label>
+          <select id="bt-preset" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none">
+            <option value="">Custom Weights</option>
+          </select>
+        </div>
+        <div>
+          <label for="bt-start-date" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Start Date</label>
+          <input id="bt-start-date" type="date" required class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none" />
+        </div>
+        <div>
+          <label for="bt-end-date" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">End Date</label>
+          <input id="bt-end-date" type="date" required class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none" />
+        </div>
+        <div>
+          <label for="bt-strategy" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Strategy</label>
+          <select id="bt-strategy" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none">
+            <option value="buy_and_hold">Buy & Hold</option>
+            <option value="monthly_rebalance">Monthly Rebalance</option>
+          </select>
+        </div>
+        <div>
+          <label for="bt-rebalance" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Rebalance</label>
+          <select id="bt-rebalance" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none">
+            <option value="none">None</option>
+            <option value="monthly" selected>Monthly</option>
+            <option value="quarterly">Quarterly</option>
+            <option value="yearly">Yearly</option>
+          </select>
+        </div>
+        <div>
+          <label for="bt-initial-capital" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Initial Capital</label>
+          <input id="bt-initial-capital" type="number" min="1" step="1000" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none" />
+        </div>
+        <div>
+          <label for="bt-benchmark" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Benchmark</label>
+          <input id="bt-benchmark" placeholder="예: SPY / 069500" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none" />
+        </div>
+        <div>
+          <label for="bt-contribution-amount" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Contribution Amount</label>
+          <input id="bt-contribution-amount" type="number" min="0" step="1000" value="0" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none" />
+        </div>
+        <div>
+          <label for="bt-contribution-frequency" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Contribution Frequency</label>
+          <select id="bt-contribution-frequency" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none">
+            <option value="none" selected>None</option>
+            <option value="monthly">Monthly</option>
+            <option value="quarterly">Quarterly</option>
+            <option value="yearly">Yearly</option>
+          </select>
+        </div>
+        <div>
+          <label for="bt-fee-bps" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Fee (bps)</label>
+          <input id="bt-fee-bps" type="number" min="0" step="0.1" value="0" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none" />
+        </div>
+        <div>
+          <label for="bt-slippage-bps" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Slippage (bps)</label>
+          <input id="bt-slippage-bps" type="number" min="0" step="0.1" value="0" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none" />
+        </div>
+      </div>
+
+      <div>
+        <label for="bt-weights" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Custom Weights</label>
+        <textarea id="bt-weights" rows="2" placeholder="예: SPY:60,QQQ:40 또는 005930:0.5,000660:0.5" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none"></textarea>
+      </div>
+
+      <div>
+        <label for="bt-compare-presets" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Compare Presets</label>
+        <select id="bt-compare-presets" multiple size="5" class="w-full rounded-xl border border-gray-200 px-3 py-2 text-sm {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none"></select>
+        <p class="mt-1 text-xs text-gray-500">Ctrl/Command 키로 다중 선택합니다.</p>
+      </div>
+
+      <label class="inline-flex items-center gap-2 text-sm text-gray-900">
+        <input id="bt-include-benchmark" type="checkbox" checked class="rounded border-gray-300 {% if is_kr %}text-indigo-600 focus:ring-indigo-600{% else %}text-emerald-600 focus:ring-emerald-600{% endif %}" />
+        비교 차트에 벤치마크 포함
+      </label>
+
+      <div class="flex items-center gap-2">
+        <button id="bt-submit" type="submit" class="rounded-xl px-4 py-2 text-sm font-medium text-white {% if is_kr %}bg-indigo-600 hover:bg-indigo-500{% else %}bg-emerald-600 hover:bg-emerald-500{% endif %}">Run Backtest</button>
+        <button id="download-daily" type="button" class="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-500{% else %}hover:border-emerald-500 hover:text-emerald-500{% endif %}">Daily CSV</button>
+        <button id="download-trades" type="button" class="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-500{% else %}hover:border-emerald-500 hover:text-emerald-500{% endif %}">Trades CSV</button>
+      </div>
+    </form>
+
+    <pre id="bt-status" class="mt-4 min-h-20 rounded-xl border border-gray-200 bg-white p-4 text-xs text-gray-900">Ready</pre>
+  </section>
+
+  <section id="bt-output" class="hidden space-y-6">
+    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">Final Equity</p><p id="m-final-equity" class="mt-2 text-xl font-semibold">-</p></article>
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">Net Invested</p><p id="m-net-invested" class="mt-2 text-xl font-semibold">-</p></article>
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">Contributed</p><p id="m-contributed" class="mt-2 text-xl font-semibold">-</p></article>
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">Contrib Count</p><p id="m-contrib-count" class="mt-2 text-xl font-semibold">-</p></article>
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">Cumulative Return</p><p id="m-cum-ret" class="mt-2 text-xl font-semibold">-</p></article>
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">CAGR</p><p id="m-cagr" class="mt-2 text-xl font-semibold">-</p></article>
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">MDD</p><p id="m-mdd" class="mt-2 text-xl font-semibold">-</p></article>
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">Volatility</p><p id="m-vol" class="mt-2 text-xl font-semibold">-</p></article>
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">Sharpe</p><p id="m-sharpe" class="mt-2 text-xl font-semibold">-</p></article>
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">Turnover</p><p id="m-turnover" class="mt-2 text-xl font-semibold">-</p></article>
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">Trades</p><p id="m-trades" class="mt-2 text-xl font-semibold">-</p></article>
+      <article class="rounded-2xl bg-white p-4 shadow-sm"><p class="text-xs uppercase tracking-wide text-gray-500">Benchmark Return</p><p id="m-bench" class="mt-2 text-xl font-semibold">-</p></article>
+    </div>
+
+    <article class="rounded-2xl bg-white p-6 shadow-sm">
+      <h3 class="text-base font-semibold text-gray-900">Portfolio / Benchmark / Presets (Index=100)</h3>
+      <svg id="compare-chart" viewBox="0 0 920 280" preserveAspectRatio="none" class="mt-4 h-72 w-full rounded-xl border border-gray-200 bg-white"></svg>
+      <ul id="compare-legend" class="mt-3 flex flex-wrap gap-2 text-xs text-gray-500"></ul>
+      <div id="compare-summary" class="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4"></div>
+    </article>
+
+    <div class="grid gap-4 lg:grid-cols-2">
+      <article class="rounded-2xl bg-white p-6 shadow-sm">
+        <h3 class="text-base font-semibold text-gray-900">Equity Curve</h3>
+        <svg id="equity-chart" viewBox="0 0 920 280" preserveAspectRatio="none" class="mt-4 h-72 w-full rounded-xl border border-gray-200 bg-white"></svg>
+      </article>
+      <article class="rounded-2xl bg-white p-6 shadow-sm">
+        <h3 class="text-base font-semibold text-gray-900">Drawdown</h3>
+        <svg id="drawdown-chart" viewBox="0 0 920 280" preserveAspectRatio="none" class="mt-4 h-72 w-full rounded-xl border border-gray-200 bg-white"></svg>
+      </article>
+    </div>
+
+    <article class="rounded-2xl bg-white p-6 shadow-sm">
+      <h3 class="text-base font-semibold text-gray-900">Recent Trades (Top 40)</h3>
+      <div class="mt-4 overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+          <thead class="bg-white text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+            <tr>
+              <th class="px-4 py-3">Date</th>
+              <th class="px-4 py-3">Code</th>
+              <th class="px-4 py-3">Side</th>
+              <th class="px-4 py-3">Qty</th>
+              <th class="px-4 py-3">Price</th>
+              <th class="px-4 py-3">Gross</th>
+              <th class="px-4 py-3">Cost</th>
+            </tr>
+          </thead>
+          <tbody id="trade-table-body" class="divide-y divide-gray-100 text-gray-900"></tbody>
+        </table>
+      </div>
+      <p id="trade-table-note" class="mt-2 text-xs text-gray-500"></p>
+    </article>
+  </section>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">Recent Runs (Local Browser)</h2>
+    <div class="mt-4 overflow-x-auto">
+      <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-white text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+          <tr>
+            <th class="px-4 py-3">Time</th>
+            <th class="px-4 py-3">Preset/Type</th>
+            <th class="px-4 py-3">Period</th>
+            <th class="px-4 py-3">Final Equity</th>
+            <th class="px-4 py-3">Cum Return</th>
+            <th class="px-4 py-3">Contribution</th>
+          </tr>
+        </thead>
+        <tbody id="run-history-body" class="divide-y divide-gray-100 text-gray-900"></tbody>
+      </table>
+    </div>
+  </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const currentMarket = "{{ current_market }}";
+  const historyKey = `backtest_runs_v3_${currentMarket}`;
+
+  const presetSelect = document.getElementById("bt-preset");
+  const comparePresetsSelect = document.getElementById("bt-compare-presets");
+  const includeBenchmarkCheck = document.getElementById("bt-include-benchmark");
+  const strategySelect = document.getElementById("bt-strategy");
+  const rebalanceSelect = document.getElementById("bt-rebalance");
+  const benchmarkInput = document.getElementById("bt-benchmark");
+  const weightsInput = document.getElementById("bt-weights");
+  const initialCapitalInput = document.getElementById("bt-initial-capital");
+  const contributionAmountInput = document.getElementById("bt-contribution-amount");
+  const contributionFrequencyInput = document.getElementById("bt-contribution-frequency");
+  const form = document.getElementById("backtest-form");
+  const statusBox = document.getElementById("bt-status");
+  const outputSection = document.getElementById("bt-output");
+  const tradeTableBody = document.getElementById("trade-table-body");
+  const tradeTableNote = document.getElementById("trade-table-note");
+  const compareLegend = document.getElementById("compare-legend");
+  const compareSummary = document.getElementById("compare-summary");
+  const runHistoryBody = document.getElementById("run-history-body");
+  const downloadDailyBtn = document.getElementById("download-daily");
+  const downloadTradesBtn = document.getElementById("download-trades");
+  const submitBtn = document.getElementById("bt-submit");
+  const presetMap = new Map();
+  const primaryColor = "{{ '#4f46e5' if is_kr else '#059669' }}";
+  const primaryArea = "{{ 'rgba(79, 70, 229, 0.10)' if is_kr else 'rgba(5, 150, 105, 0.10)' }}";
+  const chartColors = [primaryColor, "#0f766e", "#b45309", "#7c3aed", "#be123c", "#0369a1", "#374151"];
+  let lastResult = null;
+
+  const setDefaultDates = () => {
+    const end = new Date();
+    const start = new Date();
+    start.setFullYear(end.getFullYear() - 2);
+    document.getElementById("bt-end-date").value = end.toISOString().slice(0, 10);
+    document.getElementById("bt-start-date").value = start.toISOString().slice(0, 10);
+  };
+
+  const setDefaultCapitalByMarket = () => {
+    initialCapitalInput.value = currentMarket === "US" ? "10000" : "10000000";
+  };
+
+  const formatWeightLine = (assets) => assets.map((a) => `${a.code}:${a.weight}`).join(", ");
+
+  const refreshComparePresetOptions = () => {
+    const selectedMain = presetSelect.value;
+    const prevSelected = new Set(Array.from(comparePresetsSelect.selectedOptions).map((o) => o.value));
+    while (comparePresetsSelect.firstChild) comparePresetsSelect.removeChild(comparePresetsSelect.firstChild);
+    for (const preset of presetMap.values()) {
+      if (preset.market !== currentMarket) continue;
+      if (preset.key === selectedMain) continue;
+      const opt = document.createElement("option");
+      opt.value = preset.key;
+      opt.textContent = `${preset.name} (${preset.key})`;
+      if (prevSelected.has(preset.key)) opt.selected = true;
+      comparePresetsSelect.appendChild(opt);
+    }
+  };
+
+  const applyPreset = () => {
+    const key = presetSelect.value;
+    if (!key) {
+      weightsInput.disabled = false;
+      weightsInput.placeholder = "예: SPY:60,QQQ:40 또는 005930:0.5,000660:0.5";
+      refreshComparePresetOptions();
+      return;
+    }
+    const preset = presetMap.get(key);
+    if (!preset) return;
+    strategySelect.value = "monthly_rebalance";
+    rebalanceSelect.value = "monthly";
+    weightsInput.value = formatWeightLine(preset.assets);
+    weightsInput.disabled = true;
+    benchmarkInput.value = preset.benchmark_code || "";
+    setDefaultCapitalByMarket();
+    refreshComparePresetOptions();
+  };
+
+  const loadPresets = async () => {
+    try {
+      const res = await fetch("/api/backtest/presets");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "failed to load presets");
+      const presets = data.presets || [];
+      for (const preset of presets) {
+        if (preset.market !== currentMarket) continue;
+        presetMap.set(preset.key, preset);
+        const option = document.createElement("option");
+        option.value = preset.key;
+        option.textContent = `${preset.name} (${preset.key})`;
+        presetSelect.appendChild(option);
+      }
+      refreshComparePresetOptions();
+    } catch (err) {
+      statusBox.textContent = "Preset load failed: " + err.message;
+    }
+  };
+
+  const fmtNumber = (v) => (v === null || v === undefined ? "-" : Number(v).toLocaleString("ko-KR", { maximumFractionDigits: 2 }));
+  const fmtPct = (v) => (v === null || v === undefined ? "-" : `${(Number(v) * 100).toFixed(2)}%`);
+  const fmtNum4 = (v) => (v === null || v === undefined ? "-" : Number(v).toFixed(4));
+
+  const setMetric = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+
+  const createSvg = (tag, attrs) => {
+    const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, String(v)));
+    return el;
+  };
+
+  const renderLineChart = (svgId, values, lineColor, fillColor) => {
+    const svg = document.getElementById(svgId);
+    if (!svg) return;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    const width = 920;
+    const height = 280;
+    const pad = 24;
+    if (!values || values.length < 2) {
+      const text = createSvg("text", { x: 20, y: 40, fill: "#6b7280", "font-size": 14 });
+      text.textContent = "No chart data";
+      svg.appendChild(text);
+      return;
+    }
+
+    let minV = Math.min(...values);
+    let maxV = Math.max(...values);
+    if (Math.abs(maxV - minV) < 1e-9) {
+      maxV += 1;
+      minV -= 1;
+    }
+
+    const scaleX = (idx) => pad + (idx * (width - pad * 2)) / (values.length - 1);
+    const scaleY = (v) => height - pad - ((v - minV) * (height - pad * 2)) / (maxV - minV);
+
+    svg.appendChild(createSvg("line", { x1: pad, y1: pad, x2: width - pad, y2: pad, stroke: "#e5e7eb", "stroke-width": 1 }));
+    svg.appendChild(createSvg("line", { x1: pad, y1: height / 2, x2: width - pad, y2: height / 2, stroke: "#e5e7eb", "stroke-width": 1 }));
+    svg.appendChild(createSvg("line", { x1: pad, y1: height - pad, x2: width - pad, y2: height - pad, stroke: "#e5e7eb", "stroke-width": 1 }));
+
+    const points = values.map((v, idx) => [scaleX(idx), scaleY(v)]);
+    const dLine = points.map((p, idx) => `${idx === 0 ? "M" : "L"} ${p[0]} ${p[1]}`).join(" ");
+    const areaPath = `${dLine} L ${points[points.length - 1][0]} ${height - pad} L ${points[0][0]} ${height - pad} Z`;
+
+    svg.appendChild(createSvg("path", { d: areaPath, fill: fillColor }));
+    svg.appendChild(createSvg("path", { d: dLine, fill: "none", stroke: lineColor, "stroke-width": 2.5 }));
+  };
+
+  const renderMultiLineChart = (svgId, seriesList) => {
+    const svg = document.getElementById(svgId);
+    if (!svg) return;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    compareLegend.innerHTML = "";
+    compareSummary.innerHTML = "";
+
+    const prepared = (seriesList || []).filter((s) => (s.points || []).length >= 2);
+    if (!prepared.length) {
+      const text = createSvg("text", { x: 20, y: 40, fill: "#6b7280", "font-size": 14 });
+      text.textContent = "No comparison data";
+      svg.appendChild(text);
+      return;
+    }
+
+    const width = 920;
+    const height = 280;
+    const pad = 24;
+
+    let minV = Infinity;
+    let maxV = -Infinity;
+    prepared.forEach((series) => {
+      series.points.forEach((p) => {
+        const v = Number(p.index || 0);
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+      });
+    });
+    if (Math.abs(maxV - minV) < 1e-9) {
+      maxV += 1;
+      minV -= 1;
+    }
+
+    const scaleXByLen = (idx, len) => (len <= 1 ? pad : pad + (idx * (width - pad * 2)) / (len - 1));
+    const scaleY = (v) => height - pad - ((v - minV) * (height - pad * 2)) / (maxV - minV);
+
+    svg.appendChild(createSvg("line", { x1: pad, y1: pad, x2: width - pad, y2: pad, stroke: "#e5e7eb", "stroke-width": 1 }));
+    svg.appendChild(createSvg("line", { x1: pad, y1: height / 2, x2: width - pad, y2: height / 2, stroke: "#e5e7eb", "stroke-width": 1 }));
+    svg.appendChild(createSvg("line", { x1: pad, y1: height - pad, x2: width - pad, y2: height - pad, stroke: "#e5e7eb", "stroke-width": 1 }));
+
+    prepared.forEach((series, idx) => {
+      const color = chartColors[idx % chartColors.length];
+      const points = series.points.map((p, i) => [scaleXByLen(i, series.points.length), scaleY(Number(p.index || 0))]);
+      const d = points.map((pt, i) => `${i === 0 ? "M" : "L"} ${pt[0]} ${pt[1]}`).join(" ");
+      svg.appendChild(createSvg("path", { d, fill: "none", stroke: color, "stroke-width": 2.2 }));
+
+      const li = document.createElement("li");
+      li.className = "rounded-lg border border-gray-200 bg-white px-2 py-1";
+      li.textContent = `${series.label || series.key}`;
+      compareLegend.appendChild(li);
+
+      const first = Number(series.points[0].index || 0);
+      const last = Number(series.points[series.points.length - 1].index || 0);
+      const ret = first > 0 ? (last / first - 1) : 0;
+      const card = document.createElement("article");
+      card.className = "rounded-xl border border-gray-200 bg-white p-2";
+      card.innerHTML = `<p class="text-xs text-gray-500">${series.label || series.key}</p><p class="text-sm font-semibold text-gray-900">${fmtPct(ret)}</p>`;
+      compareSummary.appendChild(card);
+    });
+  };
+
+  const renderTrades = (trades) => {
+    tradeTableBody.innerHTML = "";
+    const top = (trades || []).slice(0, 40);
+    top.forEach((t) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="px-4 py-3">${t.trade_date || "-"}</td>
+        <td class="px-4 py-3">${t.stock_code || "-"}</td>
+        <td class="px-4 py-3">${t.side || "-"}</td>
+        <td class="px-4 py-3">${fmtNumber(t.quantity)}</td>
+        <td class="px-4 py-3">${fmtNumber(t.price)}</td>
+        <td class="px-4 py-3">${fmtNumber(t.gross)}</td>
+        <td class="px-4 py-3">${fmtNumber(t.cost)}</td>
+      `;
+      tradeTableBody.appendChild(tr);
+    });
+
+    if (!trades || !trades.length) {
+      tradeTableNote.textContent = "No trades";
+    } else if (trades.length > 40) {
+      tradeTableNote.textContent = `Showing top 40 / total ${trades.length}`;
+    } else {
+      tradeTableNote.textContent = `Total ${trades.length}`;
+    }
+  };
+
+  const saveRunHistory = (result) => {
+    try {
+      const history = JSON.parse(localStorage.getItem(historyKey) || "[]");
+      const summary = result.summary || {};
+      const input = result.input || {};
+      history.unshift({
+        saved_at: new Date().toISOString(),
+        run_id: result.run_id,
+        preset_key: input.preset_key || "custom",
+        start_date: input.start_date,
+        end_date: input.end_date,
+        final_equity: summary.final_equity,
+        cumulative_return: summary.cumulative_return,
+        contribution_amount: summary.contribution_amount,
+      });
+      localStorage.setItem(historyKey, JSON.stringify(history.slice(0, 20)));
+    } catch (_) {
+      // ignore local storage failures
+    }
+  };
+
+  const renderRunHistory = () => {
+    runHistoryBody.innerHTML = "";
+    let history = [];
+    try {
+      history = JSON.parse(localStorage.getItem(historyKey) || "[]");
+    } catch (_) {
+      history = [];
+    }
+    if (!history.length) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td class="px-4 py-3" colspan="6">No local history yet</td>`;
+      runHistoryBody.appendChild(tr);
+      return;
+    }
+
+    history.forEach((h) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="px-4 py-3">${(h.saved_at || "").replace("T", " ").slice(0, 16)}</td>
+        <td class="px-4 py-3">${h.preset_key || "custom"}</td>
+        <td class="px-4 py-3">${h.start_date || "-"}..${h.end_date || "-"}</td>
+        <td class="px-4 py-3">${fmtNumber(h.final_equity)}</td>
+        <td class="px-4 py-3">${fmtPct(h.cumulative_return)}</td>
+        <td class="px-4 py-3">${fmtNumber(h.contribution_amount)}</td>
+      `;
+      runHistoryBody.appendChild(tr);
+    });
+  };
+
+  const toCsv = (rows) => {
+    if (!rows || !rows.length) return "";
+    const headers = Object.keys(rows[0]);
+    const escape = (v) => {
+      const s = String(v ?? "");
+      if (s.includes('"') || s.includes(",") || s.includes("\n")) {
+        return `"${s.replace(/"/g, '""')}"`;
+      }
+      return s;
+    };
+    const lines = [headers.join(",")];
+    rows.forEach((r) => lines.push(headers.map((h) => escape(r[h])).join(",")));
+    return lines.join("\n");
+  };
+
+  const downloadCsv = (filename, rows) => {
+    const csv = toCsv(rows);
+    if (!csv) return;
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const renderResult = (payload) => {
+    lastResult = payload;
+    const summary = payload.summary || {};
+
+    setMetric("m-final-equity", fmtNumber(summary.final_equity));
+    setMetric("m-net-invested", fmtNumber(summary.net_invested_capital));
+    setMetric("m-contributed", fmtNumber(summary.contributed_capital));
+    setMetric("m-contrib-count", fmtNumber(summary.contribution_count));
+    setMetric("m-cum-ret", fmtPct(summary.cumulative_return));
+    setMetric("m-cagr", fmtPct(summary.cagr));
+    setMetric("m-mdd", fmtPct(summary.mdd));
+    setMetric("m-vol", fmtPct(summary.volatility));
+    setMetric("m-sharpe", fmtNum4(summary.sharpe));
+    setMetric("m-turnover", fmtPct(summary.turnover_ratio));
+    setMetric("m-trades", fmtNumber(summary.trade_count));
+    setMetric("m-bench", fmtPct(summary.benchmark_cumulative_return));
+
+    const daily = payload.daily || [];
+    renderLineChart("equity-chart", daily.map((d) => Number(d.equity || 0)), primaryColor, primaryArea);
+    renderLineChart("drawdown-chart", daily.map((d) => Number(d.drawdown || 0)), "#b91c1c", "rgba(185, 28, 28, 0.10)");
+    renderMultiLineChart("compare-chart", payload.comparison_series || []);
+    renderTrades(payload.trades || []);
+    outputSection.classList.remove("hidden");
+  };
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const preset = presetSelect.value.trim();
+    const compareKeys = Array.from(comparePresetsSelect.selectedOptions).map((o) => o.value);
+
+    const payload = {
+      market: currentMarket,
+      start_date: document.getElementById("bt-start-date").value,
+      end_date: document.getElementById("bt-end-date").value,
+      strategy: strategySelect.value,
+      rebalance: rebalanceSelect.value,
+      initial_capital: Number(initialCapitalInput.value || 0),
+      contribution_amount: Number(contributionAmountInput.value || 0),
+      contribution_frequency: contributionFrequencyInput.value,
+      fee_bps: Number(document.getElementById("bt-fee-bps").value || 0),
+      slippage_bps: Number(document.getElementById("bt-slippage-bps").value || 0),
+      benchmark_code: (benchmarkInput.value || "").trim().toUpperCase(),
+      compare_presets: compareKeys,
+      include_benchmark_in_compare: includeBenchmarkCheck.checked,
+    };
+
+    if (preset) {
+      payload.preset = preset;
+    } else {
+      payload.weights = (weightsInput.value || "").trim();
+    }
+
+    submitBtn.disabled = true;
+    statusBox.textContent = "Running backtest...";
+
+    try {
+      const res = await fetch("/api/backtest/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "backtest failed");
+      statusBox.textContent = `Done run_id=${data.run_id}`;
+      renderResult(data);
+      saveRunHistory(data);
+      renderRunHistory();
+    } catch (err) {
+      statusBox.textContent = "Run failed: " + err.message;
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  downloadDailyBtn.addEventListener("click", () => {
+    if (!lastResult) return;
+    downloadCsv("backtest_daily.csv", lastResult.daily || []);
+  });
+
+  downloadTradesBtn.addEventListener("click", () => {
+    if (!lastResult) return;
+    downloadCsv("backtest_trades.csv", lastResult.trades || []);
+  });
+
+  presetSelect.addEventListener("change", applyPreset);
+  strategySelect.addEventListener("change", () => {
+    if (strategySelect.value === "buy_and_hold") {
+      rebalanceSelect.value = "none";
+    } else if (rebalanceSelect.value === "none") {
+      rebalanceSelect.value = "monthly";
+    }
+  });
+
+  setDefaultDates();
+  setDefaultCapitalByMarket();
+  loadPresets();
+  renderRunHistory();
+</script>
+{% endblock %}
+
+

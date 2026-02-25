@@ -45,6 +45,10 @@ class Settings:
     llm_trust_env: bool
     enable_financial_collection: bool
     financial_refresh_min_hours: int
+    enable_price_collection: bool
+    price_collect_kr_time_kst: str
+    price_collect_us_time_kst: str
+    price_lookback_days: int
 
 
 def _parse_bool(value: str, default: bool = False) -> bool:
@@ -95,6 +99,10 @@ def load_settings() -> Settings:
         llm_trust_env=_parse_bool(os.getenv("LLM_TRUST_ENV", "false")),
         enable_financial_collection=_parse_bool(os.getenv("ENABLE_FINANCIAL_COLLECTION", "true"), default=True),
         financial_refresh_min_hours=int(os.getenv("FINANCIAL_REFRESH_MIN_HOURS", "20")),
+        enable_price_collection=_parse_bool(os.getenv("ENABLE_PRICE_COLLECTION", "true"), default=True),
+        price_collect_kr_time_kst=os.getenv("PRICE_COLLECT_KR_TIME_KST", "16:40").strip(),
+        price_collect_us_time_kst=os.getenv("PRICE_COLLECT_US_TIME_KST", "07:10").strip(),
+        price_lookback_days=int(os.getenv("PRICE_LOOKBACK_DAYS", "400")),
     )
 
 

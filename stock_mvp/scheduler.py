@@ -12,6 +12,8 @@ def start_scheduler(
     settings: Settings,
     morning_brief_job: Callable[[], None] | None = None,
     universe_refresh_job: Callable[[], None] | None = None,
+    price_collect_kr_job: Callable[[], None] | None = None,
+    price_collect_us_job: Callable[[], None] | None = None,
 ) -> Any:
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.cron import CronTrigger
@@ -88,6 +90,34 @@ def start_scheduler(
             coalesce=True,
         )
 
+    if settings.enable_price_collection:
+        kr_time = parse_hhmm(settings.price_collect_kr_time_kst)
+        us_time = parse_hhmm(settings.price_collect_us_time_kst)
+        if kr_time and us_time and kr_time == us_time:
+            us_time = _add_minutes(us_time, 1)
+            print(
+                "[WARN] KR/US price collect times matched; "
+                f"US price collect time shifted to {us_time[0]:02d}:{us_time[1]:02d}"
+            )
+        if price_collect_kr_job and kr_time:
+            scheduler.add_job(
+                price_collect_kr_job,
+                trigger=CronTrigger(hour=kr_time[0], minute=kr_time[1], timezone="Asia/Seoul"),
+                id="price_collect_kr_daily",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+        if price_collect_us_job and us_time:
+            scheduler.add_job(
+                price_collect_us_job,
+                trigger=CronTrigger(hour=us_time[0], minute=us_time[1], timezone="Asia/Seoul"),
+                id="price_collect_us_daily",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+
     scheduler.start()
     return scheduler
 
@@ -121,3 +151,9 @@ def parse_hhmm(value: str) -> tuple[int, int] | None:
     if not match:
         return None
     return int(match.group(1)), int(match.group(2))
+
+
+def _add_minutes(value: tuple[int, int], minutes: int) -> tuple[int, int]:
+    base_total = value[0] * 60 + value[1]
+    normalized = (base_total + minutes) % (24 * 60)
+    return normalized // 60, normalized % 60

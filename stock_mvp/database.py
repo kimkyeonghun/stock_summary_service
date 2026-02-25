@@ -9,6 +9,7 @@ from stock_mvp.models import (
     CollectedDocument,
     FinancialSnapshot,
     GeneratedSummary,
+    PriceBar,
     Sector,
     SectorGeneratedSummary,
     Stock,
@@ -97,6 +98,24 @@ CREATE TABLE IF NOT EXISTS financial_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_financial_snapshots_stock ON financial_snapshots(stock_code);
 CREATE INDEX IF NOT EXISTS idx_financial_snapshots_collected ON financial_snapshots(collected_at);
+
+CREATE TABLE IF NOT EXISTS price_bars (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stock_code TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    open REAL,
+    high REAL,
+    low REAL,
+    close REAL,
+    adj_close REAL,
+    volume INTEGER,
+    source TEXT NOT NULL,
+    collected_at TEXT NOT NULL,
+    FOREIGN KEY(stock_code) REFERENCES stocks(code) ON DELETE CASCADE,
+    UNIQUE(stock_code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_price_bars_stock_date ON price_bars(stock_code, date(trade_date) DESC);
+CREATE INDEX IF NOT EXISTS idx_price_bars_trade_date ON price_bars(date(trade_date) DESC);
 
 CREATE TABLE IF NOT EXISTS sector_documents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -645,6 +664,96 @@ def latest_financial_snapshots(conn: sqlite3.Connection, limit: int = 120) -> li
         LIMIT ?
         """,
         (limit,),
+    ).fetchall()
+
+
+def upsert_price_bars(conn: sqlite3.Connection, bars: list[PriceBar], commit: bool = True) -> int:
+    if not bars:
+        return 0
+    sql = """
+    INSERT INTO price_bars(
+        stock_code, trade_date, open, high, low, close, adj_close, volume, source, collected_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(stock_code, trade_date) DO UPDATE SET
+        open=excluded.open,
+        high=excluded.high,
+        low=excluded.low,
+        close=excluded.close,
+        adj_close=excluded.adj_close,
+        volume=excluded.volume,
+        source=excluded.source,
+        collected_at=excluded.collected_at
+    """
+    now_iso = now_utc_iso()
+    conn.executemany(
+        sql,
+        [
+            (
+                b.stock_code,
+                b.trade_date.date().isoformat(),
+                b.open,
+                b.high,
+                b.low,
+                b.close,
+                b.adj_close,
+                b.volume,
+                b.source,
+                now_iso,
+            )
+            for b in bars
+        ],
+    )
+    if commit:
+        conn.commit()
+    return len(bars)
+
+
+def latest_price_trade_date(conn: sqlite3.Connection, stock_code: str) -> str | None:
+    row = conn.execute(
+        """
+        SELECT trade_date
+        FROM price_bars
+        WHERE stock_code = ?
+        ORDER BY date(trade_date) DESC
+        LIMIT 1
+        """,
+        (stock_code,),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["trade_date"] or "")
+
+
+def latest_price_bars(conn: sqlite3.Connection, stock_code: str, limit: int = 365) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT stock_code, trade_date, open, high, low, close, adj_close, volume, source, collected_at
+        FROM price_bars
+        WHERE stock_code = ?
+        ORDER BY date(trade_date) DESC
+        LIMIT ?
+        """,
+        (stock_code, limit),
+    ).fetchall()
+
+
+def price_bars_in_range(
+    conn: sqlite3.Connection,
+    stock_code: str,
+    start_date: str,
+    end_date: str,
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT stock_code, trade_date, open, high, low, close, adj_close, volume, source, collected_at
+        FROM price_bars
+        WHERE stock_code = ?
+          AND date(trade_date) >= date(?)
+          AND date(trade_date) <= date(?)
+        ORDER BY date(trade_date) ASC
+        """,
+        (stock_code, start_date, end_date),
     ).fetchall()
 
 

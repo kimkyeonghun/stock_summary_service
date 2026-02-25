@@ -1,4 +1,4 @@
-# Stock Info MVP
+# BriefAlpha
 
 Private-use stock information MVP for beginner investors.
 
@@ -26,6 +26,9 @@ Then it creates:
 - Sector-level deduplicated document aggregation (M2-T02 baseline)
 - Sector-level 8-line summaries + sentiment (LLM-first, rule fallback)
 - Financial snapshots (PER/PBR/EPS/ROE/Market Cap) for KR/US
+- Daily price-bar collection (KR/US) for chart/backtest foundation
+- Backtest engine v1 (buy-and-hold, monthly rebalance, benchmark compare)
+- Backtest web screen: periodic contribution (DCA) + multi-portfolio/benchmark comparison chart
 - Stock summary format: conclusion/evidence/risk/checkpoints/final sentiment
 - Stock detail: latest 10 documents first, with "load more" for additional items
 
@@ -100,6 +103,30 @@ Collect financial snapshots directly:
 python scripts/run_financials.py --stock-codes "005930,AAPL"
 ```
 
+Collect daily price bars directly:
+
+```bash
+python scripts/run_prices.py --market KR
+python scripts/run_prices.py --market US
+```
+
+Run backtest (ETF/stock portfolio):
+
+```bash
+python scripts/run_backtest.py --market US --weights "SPY:60,QQQ:40" --start-date 2024-01-01 --end-date 2025-12-31 --strategy monthly_rebalance --benchmark SPY
+python scripts/run_backtest.py --market KR --weights "005930:0.5,000660:0.5" --start-date 2024-01-01 --end-date 2025-12-31 --strategy buy_and_hold
+python scripts/run_backtest.py --list-presets
+python scripts/run_backtest.py --preset all_weather --start-date 2024-01-01 --end-date 2025-12-31 --strategy monthly_rebalance
+python scripts/run_backtest.py --preset all_weather --start-date 2024-01-01 --end-date 2025-12-31 --strategy monthly_rebalance --contribution-amount 500 --contribution-frequency monthly
+```
+
+Built-in preset portfolios:
+- `all_weather` (SPY/IEF/TLT/GLD/DBC)
+- `sixty_forty` (SPY/AGG)
+- `three_fund` (VTI/VXUS/BND)
+- `permanent` (SPY/TLT/GLD/SHY)
+- `golden_butterfly` (SPY/VBR/TLT/SHY/GLD)
+
 7. Start web app:
 
 ```bash
@@ -107,6 +134,7 @@ python scripts/run_server.py
 ```
 
 Open `http://127.0.0.1:5000`.
+Backtest screen is available at `http://127.0.0.1:5000/backtest`.
 
 8. (Optional) Send morning brief manually:
 
@@ -147,6 +175,10 @@ Scheduler-related env vars:
 - `CRAWLER_MAX_RETRIES=1`
 - `OPS_ERROR_ALERT_THRESHOLD=5`
 - `ENABLE_TELEGRAM_ERROR_ALERT=false`
+- `ENABLE_PRICE_COLLECTION=true`
+- `PRICE_COLLECT_KR_TIME_KST=16:40` (daily once)
+- `PRICE_COLLECT_US_TIME_KST=07:10` (daily once)
+- `PRICE_LOOKBACK_DAYS=400`
 
 Telegram env vars:
 - `TELEGRAM_BOT_TOKEN`
@@ -176,6 +208,16 @@ Ops endpoints:
 - `GET /ops/financials?market=KR&limit=100` (market filter)
 - `GET /ops/financials?stock_code=005930` (stock filter)
 - `GET /ops/financials?sort=market_rank` (original market/rank order)
+- `GET /api/backtest/presets` (built-in portfolio presets for beginners)
+- `POST /api/backtest/run` (run backtest with preset or custom weights)
+
+Backtest API example:
+
+```bash
+curl -X POST http://127.0.0.1:5000/api/backtest/run ^
+  -H "Content-Type: application/json" ^
+  -d "{\"preset\":\"all_weather\",\"start_date\":\"2024-01-01\",\"end_date\":\"2025-12-31\",\"strategy\":\"monthly_rebalance\",\"rebalance\":\"monthly\",\"contribution_amount\":500,\"contribution_frequency\":\"monthly\",\"compare_presets\":[\"sixty_forty\",\"permanent\"],\"include_benchmark_in_compare\":true}"
+```
 
 Financial snapshot check examples:
 

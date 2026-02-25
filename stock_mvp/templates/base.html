@@ -1,0 +1,78 @@
+﻿<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}BriefAlpha{% endblock %}</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='imgs/briefalpha_BA_icon_512.png') }}" />
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  {% set is_kr = current_market == 'KR' %}
+  {% set badge_class = 'bg-indigo-50 text-indigo-600' if is_kr else 'bg-emerald-50 text-emerald-600' %}
+  {% set active_text_class = 'text-indigo-600' if is_kr else 'text-emerald-600' %}
+  {% set active_bg_class = 'bg-indigo-50' if is_kr else 'bg-emerald-50' %}
+  {% set hover_text_class = 'hover:text-indigo-500' if is_kr else 'hover:text-emerald-500' %}
+  {% set logo_tone_class = 'brightness-0 saturate-100 [filter:invert(29%)_sepia(95%)_saturate(2475%)_hue-rotate(232deg)_brightness(95%)_contrast(92%)]' if is_kr else 'brightness-0 saturate-100 [filter:invert(39%)_sepia(91%)_saturate(1306%)_hue-rotate(129deg)_brightness(96%)_contrast(101%)]' %}
+  <body class="min-h-screen bg-white text-gray-900">
+    <header class="border-b border-gray-200 bg-white">
+      <div class="max-w-6xl mx-auto px-4 py-6">
+        <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div class="flex items-center gap-3">
+            <a href="{{ nav_links.dashboard }}" class="inline-flex items-center">
+              <img
+                src="{{ url_for('static', filename='imgs/briefalpha_web_logo_transparent.png') }}"
+                alt="BriefAlpha logo"
+                class="h-8 w-auto {{ logo_tone_class }}"
+              />
+            </a>
+            <span class="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium {{ badge_class }}">Private Beta</span>
+          </div>
+          <div class="flex items-center gap-4">
+            <div class="inline-flex rounded-xl border border-gray-200 bg-gray-100 p-1">
+              <a
+                href="{{ nav_links.toggle_kr }}"
+                class="rounded-lg px-4 py-2 text-sm font-medium {% if current_market == 'KR' %}bg-white {{ active_text_class }} shadow-sm{% else %}text-gray-500 {{ hover_text_class }}{% endif %}"
+              >
+                KR
+              </a>
+              <a
+                href="{{ nav_links.toggle_us }}"
+                class="rounded-lg px-4 py-2 text-sm font-medium {% if current_market == 'US' %}bg-white {{ active_text_class }} shadow-sm{% else %}text-gray-500 {{ hover_text_class }}{% endif %}"
+              >
+                US
+              </a>
+            </div>
+            <nav class="flex items-center gap-2 text-sm">
+              <a
+                href="{{ nav_links.dashboard }}"
+                class="rounded-lg px-3 py-2 {% if active_page == 'dashboard' %}{{ active_bg_class }} {{ active_text_class }}{% else %}text-gray-500 {{ hover_text_class }}{% endif %}"
+              >
+                Dashboard
+              </a>
+              <a
+                href="{{ nav_links.watchlist }}"
+                class="rounded-lg px-3 py-2 {% if active_page == 'watchlist' %}{{ active_bg_class }} {{ active_text_class }}{% else %}text-gray-500 {{ hover_text_class }}{% endif %}"
+              >
+                Watchlist
+              </a>
+              <a
+                href="{{ nav_links.backtest }}"
+                class="rounded-lg px-3 py-2 {% if active_page == 'backtest' %}{{ active_bg_class }} {{ active_text_class }}{% else %}text-gray-500 {{ hover_text_class }}{% endif %}"
+              >
+                Backtest
+              </a>
+            </nav>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto px-4 py-6">
+      {% block content %}{% endblock %}
+    </main>
+
+    <div class="hidden bg-indigo-50 text-indigo-600 hover:text-indigo-500 bg-indigo-600 hover:bg-indigo-500 border-indigo-500 hover:border-indigo-500 bg-emerald-50 text-emerald-600 hover:text-emerald-500 bg-emerald-600 hover:bg-emerald-500 border-emerald-500 hover:border-emerald-500"></div>
+
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

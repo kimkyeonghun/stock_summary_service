@@ -1,95 +1,176 @@
-<!doctype html>
-<html lang="ko">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Stock Info MVP</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap"
-      rel="stylesheet"
-    />
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
-  </head>
-  <body>
-    <main class="container">
-      <section class="hero">
-        <div>
-          <p class="eyebrow">PRIVATE USE</p>
-          <h1>Beginner Stock Briefing</h1>
-          <p class="sub">
-            종목별 뉴스/리포트를 수집해 8줄 요약으로 제공합니다. 투자 권유가 아닌 정보 정리 도구입니다.
-          </p>
-        </div>
-        <div class="actions">
-          <form id="collect-form" method="post" action="/collect">
-            <label for="stock_codes">수집 대상 코드(선택, 콤마 구분)</label>
-            <input id="stock_codes" name="stock_codes" placeholder="예: 005930,000660" />
-            <button type="submit">지금 수집 실행</button>
-          </form>
-          <button id="universe-button" type="button">유니버스 갱신 실행</button>
-          <button id="brief-button" type="button">모닝 브리프 즉시 발송</button>
-          <pre id="collect-result" class="result-box">수집 실행 대기</pre>
-        </div>
-      </section>
+﻿{% extends "base.html" %}
 
-      <section class="panel">
-        <h2>종목 요약 현황</h2>
-        <div class="stock-grid">
+{% block title %}{{ current_market }} Dashboard - BriefAlpha{% endblock %}
+
+{% block content %}
+{% set is_kr = current_market == 'KR' %}
+{% set accent_btn_class = 'bg-indigo-600 hover:bg-indigo-500' if is_kr else 'bg-emerald-600 hover:bg-emerald-500' %}
+{% set accent_link_class = 'text-indigo-600 hover:text-indigo-500' if is_kr else 'text-emerald-600 hover:text-emerald-500' %}
+{% set accent_card_hover_class = 'hover:border-indigo-200 hover:bg-indigo-50' if is_kr else 'hover:border-emerald-200 hover:bg-emerald-50' %}
+{% set accent_row_hover_class = 'hover:bg-indigo-50' if is_kr else 'hover:bg-emerald-50' %}
+{% set accent_hover_text_class = 'hover:text-indigo-500' if is_kr else 'hover:text-emerald-500' %}
+<section class="space-y-6">
+  <div class="rounded-2xl bg-white p-6 shadow-sm">
+    <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div>
+        <h1 class="text-2xl font-semibold text-gray-900">{{ current_market }} Dashboard</h1>
+        <p class="mt-2 text-sm text-gray-500">구독한 종목/섹터를 중심으로 최신 요약을 확인합니다.</p>
+      </div>
+      <form id="collect-form" method="post" action="{{ url_for('collect_now_market', market=current_market.lower()) }}" class="w-full max-w-xl space-y-3">
+        <label for="stock_codes" class="text-sm font-medium text-gray-900">수집 대상 코드(선택)</label>
+        <div class="flex flex-col gap-2 sm:flex-row">
+          <input id="stock_codes" name="stock_codes" placeholder="예: 005930,000660" class="w-full rounded-xl border border-gray-200 px-4 py-2 text-sm text-gray-900 {% if is_kr %}focus:border-indigo-600{% else %}focus:border-emerald-600{% endif %} focus:outline-none" />
+          <button type="submit" class="rounded-xl px-4 py-2 text-sm font-medium text-white {{ accent_btn_class }}">수집 실행</button>
+        </div>
+      </form>
+    </div>
+    <div class="mt-4 flex flex-wrap gap-2">
+      <button id="universe-button" type="button" class="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-900 {{ accent_hover_text_class }}">유니버스 새로고침</button>
+      <button id="brief-button" type="button" class="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-900 {{ accent_hover_text_class }}">모닝 브리프 전송</button>
+    </div>
+    <pre id="ops-result" class="mt-4 min-h-20 rounded-xl border border-gray-200 bg-white p-4 text-xs text-gray-900">Ready</pre>
+  </div>
+
+  <div class="grid gap-4 md:grid-cols-3">
+    <article class="rounded-2xl bg-white p-6 shadow-sm">
+      <p class="text-sm text-gray-500">Subscribed Tickers</p>
+      <p class="mt-2 text-2xl font-semibold text-gray-900">{{ subscribed_stocks|length }}</p>
+    </article>
+    <article class="rounded-2xl bg-white p-6 shadow-sm">
+      <p class="text-sm text-gray-500">Subscribed Sectors</p>
+      <p class="mt-2 text-2xl font-semibold text-gray-900">{{ subscribed_sectors|length }}</p>
+    </article>
+    <article class="rounded-2xl bg-white p-6 shadow-sm">
+      <p class="text-sm text-gray-500">Recent Items</p>
+      <p class="mt-2 text-2xl font-semibold text-gray-900">{{ rows|length }}</p>
+    </article>
+  </div>
+
+  {% if not has_subscriptions %}
+  <section class="rounded-2xl border border-dashed border-gray-300 bg-white p-8 text-center shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">No subscriptions yet</h2>
+    <p class="mt-2 text-sm text-gray-500">관심 종목/섹터를 추가하면 개인화된 대시보드가 표시됩니다.</p>
+    <a href="{{ nav_links.watchlist }}" class="mt-4 inline-flex rounded-xl px-4 py-2 text-sm font-medium text-white {{ accent_btn_class }}">Go To Watchlist</a>
+  </section>
+  {% else %}
+  <div class="grid gap-4 lg:grid-cols-2">
+    <section class="rounded-2xl bg-white p-6 shadow-sm">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-semibold text-gray-900">Subscribed Tickers</h2>
+        <a href="{{ nav_links.watchlist }}" class="text-sm font-medium {{ accent_link_class }}">Manage</a>
+      </div>
+      <div class="mt-4 space-y-3">
+        {% for row in subscribed_stocks %}
+        <a href="{{ url_for('stock_detail', market=current_market.lower(), code=row['code']) }}" class="block rounded-xl border border-gray-200 p-4 {{ accent_card_hover_class }}">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm font-semibold text-gray-900">{{ row['name'] }}</p>
+            <span class="rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-500">{{ row['code'] }}</span>
+          </div>
+          <p class="mt-2 text-sm text-gray-500">{{ row['line1'] or '요약이 아직 없습니다.' }}</p>
+          <p class="mt-1 text-xs text-gray-500">{{ row['as_of'] or '-' }}</p>
+        </a>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="rounded-2xl bg-white p-6 shadow-sm">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-semibold text-gray-900">Subscribed Sectors</h2>
+        <a href="{{ nav_links.watchlist }}" class="text-sm font-medium {{ accent_link_class }}">Manage</a>
+      </div>
+      <div class="mt-4 space-y-3">
+        {% for row in subscribed_sectors %}
+        <article class="rounded-xl border border-gray-200 p-4">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm font-semibold text-gray-900">{{ row['sector_name'] }}</p>
+            <span class="rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-500">{{ row['sector_code'] }}</span>
+          </div>
+          <p class="mt-2 text-sm text-gray-500">{{ row['line1'] or '요약이 아직 없습니다.' }}</p>
+          <p class="mt-1 text-xs text-gray-500">{{ row['as_of'] or '-' }}</p>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+  {% endif %}
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">Recent Stock Summaries</h2>
+    {% if rows %}
+    <div class="mt-4 overflow-x-auto">
+      <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-white text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+          <tr>
+            <th class="px-4 py-3">Code</th>
+            <th class="px-4 py-3">Name</th>
+            <th class="px-4 py-3">Summary</th>
+            <th class="px-4 py-3">As Of</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 text-gray-900">
           {% for row in rows %}
-          <a class="stock-card" href="{{ url_for('stock_detail', code=row['stock_code']) }}">
-            <p class="code">{{ row["stock_code"] }}</p>
-            <h3>{{ row["stock_name"] }}</h3>
-            <p class="line1">{{ row["line1"] or "요약 없음" }}</p>
-            <p class="asof">{{ row["as_of"] or "미생성" }}</p>
-          </a>
+          <tr class="{{ accent_row_hover_class }}">
+            <td class="px-4 py-3">
+              <a href="{{ url_for('stock_detail', market=current_market.lower(), code=row['stock_code']) }}" class="font-medium {{ accent_link_class }}">{{ row['stock_code'] }}</a>
+            </td>
+            <td class="px-4 py-3">{{ row['stock_name'] }}</td>
+            <td class="px-4 py-3">{{ row['line1'] or '-' }}</td>
+            <td class="px-4 py-3 text-xs text-gray-500">{{ row['as_of'] or '-' }}</td>
+          </tr>
           {% endfor %}
-        </div>
-      </section>
-    </main>
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="mt-4 text-sm text-gray-500">표시할 요약이 없습니다.</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}
 
-    <script>
-      const form = document.getElementById("collect-form");
-      const result = document.getElementById("collect-result");
-      const briefButton = document.getElementById("brief-button");
-      const universeButton = document.getElementById("universe-button");
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        result.textContent = "수집 실행 중...";
-        try {
-          const res = await fetch("/collect", {
-            method: "POST",
-            body: new FormData(form),
-          });
-          const data = await res.json();
-          result.textContent = JSON.stringify(data, null, 2);
-        } catch (err) {
-          result.textContent = "수집 실패: " + err.message;
-        }
-      });
+{% block scripts %}
+<script>
+  const collectForm = document.getElementById("collect-form");
+  const resultBox = document.getElementById("ops-result");
+  const briefButton = document.getElementById("brief-button");
+  const universeButton = document.getElementById("universe-button");
 
-      briefButton.addEventListener("click", async () => {
-        result.textContent = "모닝 브리프 전송 중...";
-        try {
-          const res = await fetch("/brief/send", { method: "POST" });
-          const data = await res.json();
-          result.textContent = JSON.stringify(data, null, 2);
-        } catch (err) {
-          result.textContent = "브리프 전송 실패: " + err.message;
-        }
-      });
+  const showResult = (prefix, data) => {
+    resultBox.textContent = `${prefix}\n${JSON.stringify(data, null, 2)}`;
+  };
 
-      universeButton.addEventListener("click", async () => {
-        result.textContent = "유니버스 갱신 중...";
-        try {
-          const res = await fetch("/universe/refresh", { method: "POST" });
-          const data = await res.json();
-          result.textContent = JSON.stringify(data, null, 2);
-        } catch (err) {
-          result.textContent = "유니버스 갱신 실패: " + err.message;
-        }
-      });
-    </script>
-  </body>
-</html>
+  collectForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    resultBox.textContent = "Collecting...";
+    try {
+      const res = await fetch(collectForm.action, { method: "POST", body: new FormData(collectForm) });
+      const data = await res.json();
+      showResult("Collect done", data);
+    } catch (error) {
+      resultBox.textContent = `Collect failed: ${error.message}`;
+    }
+  });
+
+  briefButton.addEventListener("click", async () => {
+    resultBox.textContent = "Sending brief...";
+    try {
+      const res = await fetch("/brief/send", { method: "POST" });
+      const data = await res.json();
+      showResult("Brief done", data);
+    } catch (error) {
+      resultBox.textContent = `Brief failed: ${error.message}`;
+    }
+  });
+
+  universeButton.addEventListener("click", async () => {
+    resultBox.textContent = "Refreshing universe...";
+    try {
+      const res = await fetch("/universe/refresh", { method: "POST" });
+      const data = await res.json();
+      showResult("Universe refresh done", data);
+    } catch (error) {
+      resultBox.textContent = `Universe refresh failed: ${error.message}`;
+    }
+  });
+</script>
+{% endblock %}

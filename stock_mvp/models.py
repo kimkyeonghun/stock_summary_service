@@ -81,3 +81,16 @@ class FinancialSnapshot:
     roe: float | None
     market_cap: int | None
     currency: str
+
+
+@dataclass(frozen=True)
+class PriceBar:
+    stock_code: str
+    trade_date: datetime
+    open: float | None
+    high: float | None
+    low: float | None
+    close: float | None
+    adj_close: float | None
+    volume: int | None
+    source: str
