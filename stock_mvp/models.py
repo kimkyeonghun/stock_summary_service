@@ -26,6 +26,9 @@ class CollectedDocument:
     url: str
     published_at: datetime | None
     body: str
+    relevance_score: float = 0.0
+    relevance_reason: str = ""
+    matched_alias: str = ""
 
 
 @dataclass(frozen=True)

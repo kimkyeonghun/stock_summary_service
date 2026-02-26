@@ -26,7 +26,7 @@ def main() -> None:
     parser.add_argument(
         "--skip-sector",
         action="store_true",
-        help="Skip sector aggregation and sector summary generation for this run.",
+        help="Skip sector-level digest/report generation for this run.",
     )
     args = parser.parse_args()
 
@@ -54,6 +54,12 @@ def main() -> None:
     print(f"inserted_docs={stats.inserted_docs}")
     print(f"skipped_docs={stats.skipped_docs}")
     print(f"summaries_written={stats.summaries_written}")
+    print(f"item_summaries_written={stats.item_summaries_written}")
+    print(f"ticker_digests_written={stats.ticker_digests_written}")
+    print(f"ticker_reports_written={stats.ticker_reports_written}")
+    print(f"sector_digests_written={stats.sector_digests_written}")
+    print(f"sector_reports_written={stats.sector_reports_written}")
+    print(f"agent_error_count={stats.agent_error_count}")
     print(f"sector_docs_written={stats.sector_docs_written}")
     print(f"sector_doc_links_written={stats.sector_doc_links_written}")
     print(f"sector_summaries_written={stats.sector_summaries_written}")

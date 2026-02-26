@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 from dataclasses import dataclass, field
 
 import requests
 
+from stock_mvp.agents.entity_digest import EntityDigestAgent
+from stock_mvp.agents.item_summarizer import ItemSummarizerAgent
+from stock_mvp.agents.report_writer import ReportWriterAgent
 from stock_mvp.config import Settings
 from stock_mvp.crawlers.naver_finance_research import NaverFinanceResearchCrawler
 from stock_mvp.crawlers.naver_news import NaverNewsCrawler
@@ -18,22 +22,14 @@ from stock_mvp.database import (
     init_db,
     insert_documents,
     list_stocks,
-    latest_sector_documents,
-    recent_sector_targets,
-    recent_documents,
-    rebuild_sector_documents,
     record_crawler_run_stat,
     upsert_financial_snapshot,
-    save_sector_summary,
-    save_summary,
     upsert_stocks,
 )
 from stock_mvp.financials import FinancialCollector
 from stock_mvp.models import Stock
-from stock_mvp.sector_summarizer import SectorSummaryBuilder
+from stock_mvp.relevance import evaluate_stock_document_relevance, passes_relevance
 from stock_mvp.stocks import DEFAULT_STOCKS
-from stock_mvp.summarizer import SummaryBuilder
-from stock_mvp.utils import dedupe_document_dicts
 
 
 @dataclass
@@ -44,6 +40,12 @@ class PipelineStats:
     inserted_docs: int = 0
     skipped_docs: int = 0
     summaries_written: int = 0
+    item_summaries_written: int = 0
+    ticker_digests_written: int = 0
+    ticker_reports_written: int = 0
+    sector_digests_written: int = 0
+    sector_reports_written: int = 0
+    agent_error_count: int = 0
     sector_docs_written: int = 0
     sector_doc_links_written: int = 0
     sector_summaries_written: int = 0
@@ -62,8 +64,9 @@ class PipelineBusyError(RuntimeError):
 class CollectionPipeline:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.summary_builder = SummaryBuilder(settings)
-        self.sector_summary_builder = SectorSummaryBuilder(settings)
+        self.item_summarizer_agent = ItemSummarizerAgent()
+        self.entity_digest_agent = EntityDigestAgent()
+        self.report_writer_agent = ReportWriterAgent()
         self.financial_collector = FinancialCollector(settings)
         self.crawlers = [
             NaverNewsCrawler(settings),
@@ -105,6 +108,12 @@ class CollectionPipeline:
                             stock=stock,
                             limit=per_source,
                         )
+                        filtered_docs, relevance_dropped = self._filter_docs_by_relevance(
+                            stock=stock,
+                            source=crawler.source,
+                            doc_type=crawler.doc_type,
+                            docs=docs,
+                        )
                         if error_message:
                             stats.error_count += 1
                             detail = (
@@ -114,10 +123,15 @@ class CollectionPipeline:
                             stats.error_details.append(detail)
                             print(f"[WARN] {detail}")
 
-                        inserted, skipped = insert_documents(conn, docs, commit=False)
+                        inserted, skipped = insert_documents(conn, filtered_docs, commit=False)
                         stats.fetched_docs += len(docs)
                         stats.inserted_docs += inserted
-                        stats.skipped_docs += skipped
+                        stats.skipped_docs += skipped + relevance_dropped
+                        if relevance_dropped > 0:
+                            print(
+                                f"[INFO] relevance filtered: source={crawler.source} "
+                                f"stock={stock.code} dropped={relevance_dropped}/{len(docs)}"
+                        )
 
                         record_crawler_run_stat(
                             conn,
@@ -127,23 +141,12 @@ class CollectionPipeline:
                             doc_type=crawler.doc_type,
                             fetched_count=len(docs),
                             inserted_count=inserted,
-                            skipped_count=skipped,
+                            skipped_count=skipped + relevance_dropped,
                             error_message=error_message,
                             attempt_count=attempts,
                             duration_ms=duration_ms,
                             commit=False,
                         )
-
-                    docs_for_summary = recent_documents(
-                        conn,
-                        stock_code=stock.code,
-                        lookback_days=self.settings.summary_lookback_days,
-                        limit=80,
-                    )
-                    summary_docs = dedupe_document_dicts([dict(r) for r in docs_for_summary])
-                    summary = self.summary_builder.build(stock_code=stock.code, docs=summary_docs)
-                    save_summary(conn, summary, commit=False)
-                    stats.summaries_written += 1
 
                     if self.settings.enable_financial_collection:
                         refresh_needed = financial_refresh_needed(
@@ -169,44 +172,9 @@ class CollectionPipeline:
                             stats.financial_snapshots_skipped += 1
                     conn.commit()
 
-                if include_sector_steps:
-                    sector_docs_written, sector_doc_links_written, _raw_rows = rebuild_sector_documents(
-                        conn,
-                        lookback_days=self.settings.summary_lookback_days,
-                        commit=False,
-                    )
-                    stats.sector_docs_written = sector_docs_written
-                    stats.sector_doc_links_written = sector_doc_links_written
-
-                    sector_targets = recent_sector_targets(
-                        conn,
-                        lookback_days=self.settings.summary_lookback_days,
-                        limit=200,
-                    )
-                    for target in sector_targets:
-                        sector_code = str(target["sector_code"])
-                        sector_name = str(target["sector_name_ko"] or target["sector_name_en"] or sector_code)
-                        docs = latest_sector_documents(
-                            conn,
-                            sector_code=sector_code,
-                            lookback_days=self.settings.summary_lookback_days,
-                            limit=90,
-                        )
-                        try:
-                            summary = self.sector_summary_builder.build(
-                                sector_code=sector_code,
-                                sector_name=sector_name,
-                                docs=[dict(r) for r in docs],
-                            )
-                            save_sector_summary(conn, summary, commit=False)
-                            stats.sector_summaries_written += 1
-                        except Exception as exc:
-                            stats.sector_summary_error_count += 1
-                            stats.error_count += 1
-                            detail = f"sector_summary sector={sector_code} error={exc}"
-                            stats.error_details.append(detail)
-                            print(f"[WARN] {detail}")
-                    conn.commit()
+                self._run_agent_steps(conn, selected=selected, include_sector_steps=include_sector_steps, stats=stats)
+                # Keep legacy field for pipeline_runs compatibility.
+                stats.summaries_written = stats.ticker_digests_written
 
                 finish_pipeline_run(
                     conn,
@@ -238,6 +206,136 @@ class CollectionPipeline:
             self._send_error_alert(stats)
 
         return stats
+
+    def _run_agent_steps(
+        self,
+        conn,
+        *,
+        selected: list[Stock],
+        include_sector_steps: bool,
+        stats: PipelineStats,
+    ) -> None:
+        by_market = self._group_stock_codes_by_market(selected)
+        for market_code, ticker_codes in by_market.items():
+            market = market_code.lower()
+            item_stats = self.item_summarizer_agent.run(
+                conn,
+                market=market,
+                ticker_codes=ticker_codes,
+                lookback_days=self.settings.summary_lookback_days,
+                limit=max(200, len(ticker_codes) * 20),
+            )
+            digest_stats = self.entity_digest_agent.run(
+                conn,
+                entity_type="ticker",
+                entity_ids=ticker_codes,
+                market=market,
+                lookback_days=self.settings.summary_lookback_days,
+            )
+            report_stats = self.report_writer_agent.run(
+                conn,
+                entity_type="ticker",
+                entity_ids=ticker_codes,
+                market=market,
+                lookback_days=14,
+            )
+
+            stats.item_summaries_written += item_stats.created
+            stats.ticker_digests_written += digest_stats.created
+            stats.ticker_reports_written += report_stats.created
+            self._merge_agent_errors(
+                stats,
+                market=market_code,
+                scope="ticker",
+                item_errors=item_stats.errors,
+                digest_errors=digest_stats.errors,
+                report_errors=report_stats.errors,
+            )
+
+            if not include_sector_steps:
+                continue
+
+            sector_codes = self._sector_codes_for_stocks(conn, market=market_code, stock_codes=ticker_codes)
+            if not sector_codes:
+                continue
+
+            sector_digest_stats = self.entity_digest_agent.run(
+                conn,
+                entity_type="sector",
+                entity_ids=sector_codes,
+                market=market,
+                lookback_days=self.settings.summary_lookback_days,
+            )
+            sector_report_stats = self.report_writer_agent.run(
+                conn,
+                entity_type="sector",
+                entity_ids=sector_codes,
+                market=market,
+                lookback_days=14,
+            )
+            stats.sector_digests_written += sector_digest_stats.created
+            stats.sector_reports_written += sector_report_stats.created
+            # Keep legacy field names in sync.
+            stats.sector_summaries_written = stats.sector_digests_written
+            self._merge_agent_errors(
+                stats,
+                market=market_code,
+                scope="sector",
+                item_errors=0,
+                digest_errors=sector_digest_stats.errors,
+                report_errors=sector_report_stats.errors,
+            )
+
+    @staticmethod
+    def _group_stock_codes_by_market(selected: list[Stock]) -> dict[str, list[str]]:
+        grouped: dict[str, list[str]] = {}
+        for stock in selected:
+            market = str(stock.market or "").upper()
+            grouped.setdefault(market, []).append(stock.code)
+        return grouped
+
+    @staticmethod
+    def _sector_codes_for_stocks(conn, *, market: str, stock_codes: list[str]) -> list[str]:
+        if not stock_codes:
+            return []
+        placeholders = ",".join("?" for _ in stock_codes)
+        sql = f"""
+        SELECT DISTINCT m.sector_code
+        FROM stock_sector_map m
+        JOIN stocks s ON s.code = m.stock_code
+        WHERE lower(s.market) = lower(?)
+          AND s.is_active = 1
+          AND m.stock_code IN ({placeholders})
+        ORDER BY m.sector_code
+        """
+        rows = conn.execute(sql, (market.lower(), *stock_codes)).fetchall()
+        return [str(r["sector_code"]) for r in rows]
+
+    @staticmethod
+    def _merge_agent_errors(
+        stats: PipelineStats,
+        *,
+        market: str,
+        scope: str,
+        item_errors: int,
+        digest_errors: int,
+        report_errors: int,
+    ) -> None:
+        if item_errors:
+            detail = f"agent item_summary market={market} scope={scope} errors={item_errors}"
+            stats.error_details.append(detail)
+            print(f"[WARN] {detail}")
+        if digest_errors:
+            detail = f"agent digest market={market} scope={scope} errors={digest_errors}"
+            stats.error_details.append(detail)
+            print(f"[WARN] {detail}")
+        if report_errors:
+            detail = f"agent report market={market} scope={scope} errors={report_errors}"
+            stats.error_details.append(detail)
+            print(f"[WARN] {detail}")
+        total = item_errors + digest_errors + report_errors
+        stats.agent_error_count += total
+        stats.error_count += total
 
     @staticmethod
     def _create_pipeline_run_with_lock(
@@ -309,6 +407,32 @@ class CollectionPipeline:
         duration_ms = int((time.perf_counter() - start) * 1000)
         return docs, attempts, error_message, duration_ms
 
+    @staticmethod
+    def _filter_docs_by_relevance(stock: Stock, source: str, doc_type: str, docs: list) -> tuple[list, int]:
+        kept: list = []
+        dropped = 0
+        for doc in docs:
+            result = evaluate_stock_document_relevance(
+                stock,
+                title=str(doc.title or ""),
+                body=str(doc.body or ""),
+                url=str(doc.url or ""),
+                source=source,
+                doc_type=doc_type,
+            )
+            if not passes_relevance(result, source=source, doc_type=doc_type):
+                dropped += 1
+                continue
+            kept.append(
+                replace(
+                    doc,
+                    relevance_score=result.score,
+                    relevance_reason=result.reason,
+                    matched_alias=result.matched_alias,
+                )
+            )
+        return kept, dropped
+
     def _send_error_alert(self, stats: PipelineStats) -> None:
         if not self.settings.telegram_bot_token or not self.settings.telegram_chat_id:
             return
@@ -320,6 +444,12 @@ class CollectionPipeline:
             f"inserted_docs={stats.inserted_docs}\n"
             f"skipped_docs={stats.skipped_docs}\n"
             f"summaries_written={stats.summaries_written}\n"
+            f"item_summaries_written={stats.item_summaries_written}\n"
+            f"ticker_digests_written={stats.ticker_digests_written}\n"
+            f"ticker_reports_written={stats.ticker_reports_written}\n"
+            f"sector_digests_written={stats.sector_digests_written}\n"
+            f"sector_reports_written={stats.sector_reports_written}\n"
+            f"agent_error_count={stats.agent_error_count}\n"
             f"sector_docs_written={stats.sector_docs_written}\n"
             f"sector_doc_links_written={stats.sector_doc_links_written}\n"
             f"sector_summaries_written={stats.sector_summaries_written}\n"

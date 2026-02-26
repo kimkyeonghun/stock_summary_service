@@ -24,6 +24,10 @@ class Settings:
     request_timeout_sec: int
     verify_ssl: bool
     ca_bundle_path: str
+    enable_pdf_ocr_fallback: bool
+    pdf_ocr_max_pages: int
+    pdf_ocr_lang: str
+    tesseract_cmd: str
     news_per_stock: int
     reports_per_stock: int
     naver_news_per_stock: int
@@ -43,6 +47,13 @@ class Settings:
     llm_max_tokens: int
     llm_request_timeout_sec: int
     llm_trust_env: bool
+    llm_daily_budget_usd: float
+    llm_job_budget_usd: float
+    llm_soft_budget_ratio: float
+    llm_budget_model: str
+    llm_hard_max_input_chars: int
+    llm_cost_input_per_1k_usd: float
+    llm_cost_output_per_1k_usd: float
     enable_financial_collection: bool
     financial_refresh_min_hours: int
     enable_price_collection: bool
@@ -76,6 +87,10 @@ def load_settings() -> Settings:
         request_timeout_sec=int(os.getenv("REQUEST_TIMEOUT_SEC", "10")),
         verify_ssl=_parse_bool(os.getenv("VERIFY_SSL", "true"), default=True),
         ca_bundle_path=os.getenv("CA_BUNDLE_PATH", "").strip(),
+        enable_pdf_ocr_fallback=_parse_bool(os.getenv("ENABLE_PDF_OCR_FALLBACK", "false")),
+        pdf_ocr_max_pages=int(os.getenv("PDF_OCR_MAX_PAGES", "4")),
+        pdf_ocr_lang=os.getenv("PDF_OCR_LANG", "kor+eng").strip(),
+        tesseract_cmd=os.getenv("TESSERACT_CMD", "").strip(),
         news_per_stock=int(os.getenv("NEWS_PER_STOCK", "20")),
         reports_per_stock=int(os.getenv("REPORTS_PER_STOCK", "10")),
         naver_news_per_stock=int(os.getenv("NAVER_NEWS_PER_STOCK", os.getenv("NEWS_PER_STOCK", "20"))),
@@ -97,6 +112,13 @@ def load_settings() -> Settings:
         llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "900")),
         llm_request_timeout_sec=int(os.getenv("LLM_REQUEST_TIMEOUT_SEC", "30")),
         llm_trust_env=_parse_bool(os.getenv("LLM_TRUST_ENV", "false")),
+        llm_daily_budget_usd=float(os.getenv("LLM_DAILY_BUDGET_USD", "0")),
+        llm_job_budget_usd=float(os.getenv("LLM_JOB_BUDGET_USD", "0")),
+        llm_soft_budget_ratio=float(os.getenv("LLM_SOFT_BUDGET_RATIO", "0.8")),
+        llm_budget_model=os.getenv("LLM_BUDGET_MODEL", "").strip(),
+        llm_hard_max_input_chars=int(os.getenv("LLM_HARD_MAX_INPUT_CHARS", "12000")),
+        llm_cost_input_per_1k_usd=float(os.getenv("LLM_COST_INPUT_PER_1K_USD", "0.0004")),
+        llm_cost_output_per_1k_usd=float(os.getenv("LLM_COST_OUTPUT_PER_1K_USD", "0.0008")),
         enable_financial_collection=_parse_bool(os.getenv("ENABLE_FINANCIAL_COLLECTION", "true"), default=True),
         financial_refresh_min_hours=int(os.getenv("FINANCIAL_REFRESH_MIN_HOURS", "20")),
         enable_price_collection=_parse_bool(os.getenv("ENABLE_PRICE_COLLECTION", "true"), default=True),

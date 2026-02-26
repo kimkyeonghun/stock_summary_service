@@ -77,6 +77,7 @@ class SummaryBuilder:
         result = self.llm.generate_json(
             system_prompt=_stock_system_prompt(),
             user_prompt=_stock_user_prompt(stock_code, docs),
+            purpose="stock_summary",
         )
         if result is None:
             return None

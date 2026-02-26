@@ -24,14 +24,8 @@ from stock_mvp.database import (
     latest_financial_snapshot,
     latest_financial_snapshots,
     latest_pipeline_runs,
-    latest_sector_summaries,
-    latest_summaries_by_stock,
-    latest_summary,
-    latest_sector_summary,
     list_sectors,
     list_stocks_by_market,
-    sector_summary_source_documents,
-    summary_source_documents,
     upsert_stocks,
 )
 from stock_mvp.pipeline import CollectionPipeline, PipelineBusyError
@@ -85,8 +79,19 @@ def create_app(settings: Settings | None = None) -> Flask:
         with connect(cfg.db_path) as conn:
             market_stocks = list_stocks_by_market(conn, market_norm, active_only=True)
             market_codes = {str(r["code"]) for r in market_stocks}
-            all_summary_rows = latest_summaries_by_stock(conn)
-            rows = [r for r in all_summary_rows if str(r["stock_code"]) in market_codes]
+            digest_by_code = _latest_ticker_digests_for_market(conn, market_norm)
+            rows = []
+            for stock_row in market_stocks:
+                code = str(stock_row["code"])
+                digest = digest_by_code.get(code)
+                rows.append(
+                    {
+                        "stock_code": code,
+                        "stock_name": str(stock_row["name"]),
+                        "line1": _digest_line1(digest),
+                        "as_of": str(digest["digest_date"]) if digest else "",
+                    }
+                )
             sector_rows = _list_sectors_for_market(conn, market_norm)
             sector_name_map = {
                 str(r["sector_code"]): str(r["sector_name_ko"] or r["sector_name_en"])
@@ -118,13 +123,13 @@ def create_app(settings: Settings | None = None) -> Flask:
 
             subscribed_sectors: list[dict[str, str]] = []
             for sector_code in subscribed_sector_codes:
-                latest_row = latest_sector_summary(conn, sector_code)
+                latest_row = _latest_entity_digest(conn, entity_type="sector", entity_id=sector_code, market=market_norm)
                 subscribed_sectors.append(
                     {
                         "sector_code": sector_code,
                         "sector_name": sector_name_map.get(sector_code, sector_code),
-                        "line1": str(latest_row["line1"] or "") if latest_row else "",
-                        "as_of": str(latest_row["as_of"] or "") if latest_row else "",
+                        "line1": _digest_line1(latest_row),
+                        "as_of": str(latest_row["digest_date"] or "") if latest_row else "",
                     }
                 )
 
@@ -221,6 +226,9 @@ def create_app(settings: Settings | None = None) -> Flask:
         market_norm = _normalize_market_or_404(market)
         _set_session_market(market_norm)
         code_norm = code.strip().upper()
+        doc_sort = str(request.args.get("doc_sort", "recent") or "recent").strip().lower()
+        if doc_sort not in {"recent", "relevance"}:
+            doc_sort = "recent"
         with connect(cfg.db_path) as conn:
             stock_row = get_stock(conn, code_norm)
             if stock_row is None:
@@ -230,20 +238,22 @@ def create_app(settings: Settings | None = None) -> Flask:
                 return redirect(url_for("stock_detail", market=stock_market.lower(), code=code_norm))
             sector_rows = get_stock_sectors(conn, code_norm)
             financial_row = latest_financial_snapshot(conn, code_norm)
-            summary_row = latest_summary(conn, code_norm)
-            source_rows_raw = summary_source_documents(conn, int(summary_row["id"])) if summary_row else []
-            news_rows = latest_documents_by_type(conn, code_norm, doc_type="news", limit=100)
-            report_rows = latest_documents_by_type(conn, code_norm, doc_type="report", limit=100)
+            digest_row = _latest_entity_digest(conn, entity_type="ticker", entity_id=code_norm, market=market_norm)
+            digest_view = _build_digest_view(conn, digest_row)
+            report_view = _latest_agent_report(conn, entity_type="ticker", entity_id=code_norm, market=market_norm)
+            item_summary_rows = _latest_item_summaries(conn, code_norm, limit=50)
+            news_rows = latest_documents_by_type(conn, code_norm, doc_type="news", limit=100, order_by=doc_sort)
+            report_rows = latest_documents_by_type(conn, code_norm, doc_type="report", limit=100, order_by=doc_sort)
             sector_briefs: list[dict[str, str]] = []
             for sector_row in sector_rows:
                 sector_code = str(sector_row["sector_code"])
-                sector_summary = latest_sector_summary(conn, sector_code)
+                sector_digest = _latest_entity_digest(conn, entity_type="sector", entity_id=sector_code, market=market_norm)
                 sector_briefs.append(
                     {
                         "sector_code": sector_code,
                         "sector_name": str(sector_row["sector_name_ko"] or sector_row["sector_name_en"]),
-                        "line1": str(sector_summary["line1"] or "") if sector_summary else "",
-                        "as_of": str(sector_summary["as_of"] or "") if sector_summary else "",
+                        "line1": _digest_line1(sector_digest),
+                        "as_of": str(sector_digest["digest_date"] or "") if sector_digest else "",
                     }
                 )
 
@@ -256,7 +266,6 @@ def create_app(settings: Settings | None = None) -> Flask:
             "sector_briefs": sector_briefs,
             "financial": financial,
         }
-        summary_sections = _build_summary_sections(summary_row, source_rows_raw)
         subscribed = code_norm in set(_get_watchlist_items("stocks", market_norm))
         return render_template(
             "stock_detail.html",
@@ -264,10 +273,13 @@ def create_app(settings: Settings | None = None) -> Flask:
             nav_links=_nav_links(market_norm),
             active_page="dashboard",
             stock=stock,
-            summary=summary_row,
-            summary_sections=summary_sections,
+            digest=digest_row,
+            digest_view=digest_view,
+            agent_report=report_view,
+            item_summaries=item_summary_rows,
             news_rows=news_rows,
             report_rows=report_rows,
+            doc_sort=doc_sort,
             doc_initial_limit=10,
             is_subscribed=subscribed,
         )
@@ -287,6 +299,12 @@ def create_app(settings: Settings | None = None) -> Flask:
                 "inserted_docs": stats.inserted_docs,
                 "skipped_docs": stats.skipped_docs,
                 "summaries_written": stats.summaries_written,
+                "item_summaries_written": stats.item_summaries_written,
+                "ticker_digests_written": stats.ticker_digests_written,
+                "ticker_reports_written": stats.ticker_reports_written,
+                "sector_digests_written": stats.sector_digests_written,
+                "sector_reports_written": stats.sector_reports_written,
+                "agent_error_count": stats.agent_error_count,
                 "sector_docs_written": stats.sector_docs_written,
                 "sector_doc_links_written": stats.sector_doc_links_written,
                 "sector_summaries_written": stats.sector_summaries_written,
@@ -392,22 +410,35 @@ def create_app(settings: Settings | None = None) -> Flask:
     @app.route("/ops/sector-summaries")
     def ops_sector_summaries():
         limit_raw = request.args.get("limit", "30")
+        market = request.args.get("market", "").strip().upper()
         try:
             limit = max(1, min(int(limit_raw), 200))
         except ValueError:
             limit = 30
         with connect(cfg.db_path) as conn:
-            rows = latest_sector_summaries(conn, limit=limit)
-        return jsonify([dict(r) for r in rows])
+            rows = _latest_sector_digests(conn, market=market or None, limit=limit)
+        return jsonify(rows)
 
     @app.route("/ops/sector-summaries/<sector_code>")
     def ops_sector_summary_detail(sector_code: str):
+        market = request.args.get("market", "").strip().upper() or "KR"
         with connect(cfg.db_path) as conn:
-            summary_row = latest_sector_summary(conn, sector_code)
-            if summary_row is None:
-                return jsonify({"message": "not found", "sector_code": sector_code}), 404
-            source_rows = sector_summary_source_documents(conn, int(summary_row["id"]))
-        return jsonify({"summary": dict(summary_row), "sources": [dict(r) for r in source_rows]})
+            digest_row = _latest_entity_digest(
+                conn,
+                entity_type="sector",
+                entity_id=sector_code.strip().upper(),
+                market=market,
+            )
+            if digest_row is None:
+                return jsonify({"message": "not found", "sector_code": sector_code, "market": market}), 404
+            digest_view = _build_digest_view(conn, digest_row)
+            report_view = _latest_agent_report(
+                conn,
+                entity_type="sector",
+                entity_id=sector_code.strip().upper(),
+                market=market,
+            )
+        return jsonify({"digest": digest_row, "digest_view": digest_view, "report": report_view})
 
     @app.route("/api/backtest/presets")
     def api_backtest_presets():
@@ -744,6 +775,215 @@ def _list_sectors_for_market(conn, market: str) -> list[Any]:
     if market_norm == "KR":
         return list_sectors(conn, active_only=True)
     return []
+
+
+def _latest_ticker_digests_for_market(conn, market: str) -> dict[str, dict[str, Any]]:
+    rows = conn.execute(
+        """
+        WITH ranked AS (
+          SELECT
+            d.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY d.entity_id
+              ORDER BY date(d.digest_date) DESC, d.id DESC
+            ) AS rn
+          FROM daily_digests d
+          WHERE d.entity_type = 'ticker'
+            AND lower(d.market) = lower(?)
+        )
+        SELECT *
+        FROM ranked
+        WHERE rn = 1
+        """,
+        (market,),
+    ).fetchall()
+    return {str(r["entity_id"]): dict(r) for r in rows}
+
+
+def _latest_sector_digests(conn, *, market: str | None, limit: int) -> list[dict[str, Any]]:
+    if market:
+        rows = conn.execute(
+            """
+            SELECT d.*
+            FROM daily_digests d
+            WHERE d.entity_type = 'sector'
+              AND lower(d.market) = lower(?)
+            ORDER BY date(d.digest_date) DESC, d.id DESC
+            LIMIT ?
+            """,
+            (market, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT d.*
+            FROM daily_digests d
+            WHERE d.entity_type = 'sector'
+            ORDER BY date(d.digest_date) DESC, d.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _latest_entity_digest(conn, *, entity_type: str, entity_id: str, market: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT *
+        FROM daily_digests
+        WHERE entity_type = ?
+          AND entity_id = ?
+          AND lower(market) = lower(?)
+        ORDER BY date(digest_date) DESC, id DESC
+        LIMIT 1
+        """,
+        (entity_type, entity_id, market),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _latest_agent_report(conn, *, entity_type: str, entity_id: str, market: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT *
+        FROM agent_reports
+        WHERE entity_type = ?
+          AND entity_id = ?
+          AND lower(market) = lower(?)
+        ORDER BY date(period_end) DESC, id DESC
+        LIMIT 1
+        """,
+        (entity_type, entity_id, market),
+    ).fetchone()
+    if row is None:
+        return None
+    payload = dict(row)
+    payload["refs"] = _safe_json_loads(payload.get("refs_json"), default=[])
+    return payload
+
+
+def _latest_item_summaries(conn, stock_code: str, *, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT
+          i.item_id,
+          i.short_summary,
+          i.created_at,
+          d.title,
+          d.url,
+          d.source,
+          COALESCE(d.published_at, d.collected_at) AS published_at,
+          e.card_id
+        FROM item_summaries i
+        JOIN documents d ON d.id = i.item_id
+        LEFT JOIN evidence_cards e ON e.item_id = i.item_id
+        WHERE d.stock_code = ?
+        ORDER BY datetime(COALESCE(d.published_at, d.collected_at)) DESC, i.item_id DESC
+        LIMIT ?
+        """,
+        (stock_code, max(1, limit)),
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        raw = dict(row)
+        raw["summary_lines"] = [compact_text(x) for x in str(raw.get("short_summary") or "").splitlines() if compact_text(x)]
+        result.append(raw)
+    return result
+
+
+def _build_digest_view(conn, digest_row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not digest_row:
+        return None
+    summary_lines = _split_non_empty_lines(str(digest_row.get("summary_8line") or ""))
+    change_lines = _split_non_empty_lines(str(digest_row.get("change_3") or ""))
+    question_lines = _split_non_empty_lines(str(digest_row.get("open_questions") or ""))
+    refs = _safe_json_loads(digest_row.get("refs_json"), default=[])
+    ref_sources = _resolve_digest_ref_sources(conn, refs)
+    return {
+        "summary_lines": summary_lines,
+        "change_lines": change_lines,
+        "question_lines": question_lines,
+        "refs": refs,
+        "ref_sources": ref_sources,
+    }
+
+
+def _resolve_digest_ref_sources(conn, refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    card_ids = [str(r.get("card_id") or "") for r in refs if str(r.get("card_id") or "")]
+    if not card_ids:
+        return []
+    placeholders = ",".join("?" for _ in card_ids)
+    rows = conn.execute(
+        f"""
+        SELECT
+          e.card_id,
+          e.item_id,
+          e.url AS evidence_url,
+          e.source_name,
+          e.source_type,
+          e.published_at AS evidence_published_at,
+          d.title,
+          d.url AS document_url,
+          d.source AS document_source,
+          COALESCE(d.published_at, d.collected_at) AS document_published_at
+        FROM evidence_cards e
+        LEFT JOIN documents d ON d.id = e.item_id
+        WHERE e.card_id IN ({placeholders})
+        """,
+        tuple(card_ids),
+    ).fetchall()
+    by_card = {str(r["card_id"]): dict(r) for r in rows}
+
+    output: list[dict[str, Any]] = []
+    for ref in refs:
+        card_id = str(ref.get("card_id") or "")
+        if not card_id:
+            continue
+        source = by_card.get(card_id)
+        if not source:
+            continue
+        output.append(
+            {
+                "alias": str(ref.get("alias") or ""),
+                "card_id": card_id,
+                "item_id": source.get("item_id"),
+                "title": str(source.get("title") or source.get("source_name") or card_id),
+                "url": str(source.get("document_url") or source.get("evidence_url") or ""),
+                "source": str(source.get("document_source") or source.get("source_name") or ""),
+                "published_at": str(source.get("document_published_at") or source.get("evidence_published_at") or ""),
+            }
+        )
+    return output
+
+
+def _digest_line1(digest_row: dict[str, Any] | None) -> str:
+    if not digest_row:
+        return ""
+    lines = _split_non_empty_lines(str(digest_row.get("summary_8line") or ""))
+    if not lines:
+        return ""
+    line1 = lines[0]
+    line1 = re.sub(r"^\s*\d+\)\s*", "", line1)
+    line1 = re.sub(r"^\s*\[[^\]]+\]\s*", "", line1)
+    line1 = re.sub(r"\s*\(cards:\s*[^)]*\)\s*$", "", line1).strip()
+    return line1
+
+
+def _split_non_empty_lines(text: str) -> list[str]:
+    return [compact_text(x) for x in str(text or "").splitlines() if compact_text(x)]
+
+
+def _safe_json_loads(value: Any, default: Any) -> Any:
+    if isinstance(value, (list, dict)):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return default
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return default
 
 
 def _build_summary_sections(summary_row: Any, source_rows: list) -> list[dict[str, Any]]:

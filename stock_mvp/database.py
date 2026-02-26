@@ -15,7 +15,7 @@ from stock_mvp.models import (
     Stock,
     StockSectorMap,
 )
-from stock_mvp.utils import normalize_url, now_utc_iso, to_iso_or_none, url_hash
+from stock_mvp.utils import compact_text, normalize_url, now_utc_iso, to_iso_or_none, url_hash
 
 
 SCHEMA_SQL = """
@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS documents (
     published_at TEXT,
     body TEXT NOT NULL,
     url_hash TEXT NOT NULL,
+    relevance_score REAL NOT NULL DEFAULT 0,
+    relevance_reason TEXT,
+    matched_alias TEXT,
     collected_at TEXT NOT NULL,
     FOREIGN KEY(stock_code) REFERENCES stocks(code),
     UNIQUE(stock_code, source, url_hash)
@@ -209,6 +212,66 @@ CREATE TABLE IF NOT EXISTS sector_summary_sources (
 );
 CREATE INDEX IF NOT EXISTS idx_sector_summary_sources_summary ON sector_summary_sources(sector_summary_id);
 
+CREATE TABLE IF NOT EXISTS item_summaries (
+    item_id INTEGER PRIMARY KEY,
+    short_summary TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(item_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evidence_cards (
+    card_id TEXT PRIMARY KEY,
+    item_id INTEGER NOT NULL UNIQUE,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    market TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    source_url_hash TEXT NOT NULL,
+    published_at TEXT,
+    fact_headline TEXT NOT NULL,
+    facts_json TEXT NOT NULL,
+    interpretation TEXT NOT NULL,
+    risk_note TEXT NOT NULL,
+    topics_json TEXT NOT NULL,
+    confidence_weight REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(item_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_cards_entity_date ON evidence_cards(entity_type, entity_id, market, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_evidence_cards_source_url_hash ON evidence_cards(source_url_hash);
+
+CREATE TABLE IF NOT EXISTS daily_digests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    market TEXT NOT NULL,
+    digest_date TEXT NOT NULL,
+    summary_8line TEXT NOT NULL,
+    change_3 TEXT NOT NULL,
+    open_questions TEXT NOT NULL,
+    refs_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(entity_type, entity_id, market, digest_date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_digests_entity ON daily_digests(entity_type, entity_id, market, digest_date DESC);
+
+CREATE TABLE IF NOT EXISTS agent_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    market TEXT NOT NULL,
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    report_md TEXT NOT NULL,
+    refs_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(entity_type, entity_id, market, period_start, period_end)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_reports_entity ON agent_reports(entity_type, entity_id, market, period_end DESC);
+
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,
@@ -262,6 +325,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     _migrate_stocks_table(conn)
+    _migrate_documents_relevance_columns(conn)
     if _get_app_meta(conn, MIGRATION_NFR_URLS_KEY) != "done":
         _migrate_naver_finance_research_urls(conn)
         _set_app_meta(conn, MIGRATION_NFR_URLS_KEY, "done")
@@ -458,9 +522,10 @@ def insert_documents(conn: sqlite3.Connection, docs: list[CollectedDocument], co
     skipped = 0
     insert_sql = """
     INSERT INTO documents(
-      stock_code, source, doc_type, title, url, published_at, body, url_hash, collected_at
+      stock_code, source, doc_type, title, url, published_at, body, url_hash,
+      relevance_score, relevance_reason, matched_alias, collected_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(stock_code, source, url_hash) DO NOTHING
     """
     refresh_sql = """
@@ -470,6 +535,9 @@ def insert_documents(conn: sqlite3.Connection, docs: list[CollectedDocument], co
       title = CASE WHEN length(?) > length(title) THEN ? ELSE title END,
       published_at = COALESCE(?, published_at),
       body = CASE WHEN length(?) > length(body) THEN ? ELSE body END,
+      relevance_score = CASE WHEN ? > relevance_score THEN ? ELSE relevance_score END,
+      relevance_reason = CASE WHEN length(?) > 0 THEN ? ELSE relevance_reason END,
+      matched_alias = CASE WHEN length(?) > 0 THEN ? ELSE matched_alias END,
       collected_at = ?
     WHERE stock_code = ? AND source = ? AND url_hash = ?
     """
@@ -490,6 +558,9 @@ def insert_documents(conn: sqlite3.Connection, docs: list[CollectedDocument], co
                 published_at_iso,
                 doc.body,
                 normalized_hash,
+                float(doc.relevance_score or 0.0),
+                compact_text(doc.relevance_reason),
+                compact_text(doc.matched_alias),
                 now_iso,
             ),
         )
@@ -507,6 +578,12 @@ def insert_documents(conn: sqlite3.Connection, docs: list[CollectedDocument], co
                     published_at_iso,
                     doc.body,
                     doc.body,
+                    float(doc.relevance_score or 0.0),
+                    float(doc.relevance_score or 0.0),
+                    compact_text(doc.relevance_reason),
+                    compact_text(doc.relevance_reason),
+                    compact_text(doc.matched_alias),
+                    compact_text(doc.matched_alias),
                     now_iso,
                     doc.stock_code,
                     doc.source,
@@ -522,7 +599,9 @@ def recent_documents(
     conn: sqlite3.Connection, stock_code: str, lookback_days: int, limit: int = 80
 ) -> list[sqlite3.Row]:
     sql = """
-    SELECT id, stock_code, source, doc_type, title, url, published_at, body
+    SELECT
+      id, stock_code, source, doc_type, title, url, published_at, body,
+      relevance_score, relevance_reason, matched_alias
     FROM documents
     WHERE stock_code = ?
       AND COALESCE(published_at, collected_at) >= datetime('now', ?)
@@ -534,7 +613,9 @@ def recent_documents(
 
 def latest_documents(conn: sqlite3.Connection, stock_code: str, limit: int = 100) -> list[sqlite3.Row]:
     sql = """
-    SELECT id, stock_code, source, doc_type, title, url, published_at, body
+    SELECT
+      id, stock_code, source, doc_type, title, url, published_at, body,
+      relevance_score, relevance_reason, matched_alias
     FROM documents
     WHERE stock_code = ?
     ORDER BY COALESCE(published_at, collected_at) DESC
@@ -544,13 +625,20 @@ def latest_documents(conn: sqlite3.Connection, stock_code: str, limit: int = 100
 
 
 def latest_documents_by_type(
-    conn: sqlite3.Connection, stock_code: str, doc_type: str, limit: int = 100
+    conn: sqlite3.Connection, stock_code: str, doc_type: str, limit: int = 100, order_by: str = "recent"
 ) -> list[sqlite3.Row]:
+    order_key = str(order_by or "recent").strip().lower()
+    if order_key == "relevance":
+        order_clause = "relevance_score DESC, COALESCE(published_at, collected_at) DESC"
+    else:
+        order_clause = "COALESCE(published_at, collected_at) DESC"
     sql = """
-    SELECT id, stock_code, source, doc_type, title, url, published_at, body
+    SELECT
+      id, stock_code, source, doc_type, title, url, published_at, body,
+      relevance_score, relevance_reason, matched_alias
     FROM documents
     WHERE stock_code = ? AND doc_type = ?
-    ORDER BY COALESCE(published_at, collected_at) DESC
+    ORDER BY """ + order_clause + """
     LIMIT ?
     """
     return conn.execute(sql, (stock_code, compact_doc_type(doc_type), limit)).fetchall()
@@ -1061,7 +1149,7 @@ def latest_summary(conn: sqlite3.Connection, stock_code: str) -> sqlite3.Row | N
         SELECT id, stock_code, as_of, line1, line2, line3, line4, line5, line6, line7, line8, model, created_at
         FROM summaries
         WHERE stock_code = ?
-        ORDER BY datetime(as_of) DESC
+        ORDER BY datetime(as_of) DESC, id DESC
         LIMIT 1
         """,
         (stock_code,),
@@ -1084,17 +1172,18 @@ def latest_sector_summary(conn: sqlite3.Connection, sector_code: str) -> sqlite3
 
 def latest_summaries_by_stock(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     sql = """
+    WITH ranked AS (
+      SELECT
+        t.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY t.stock_code
+          ORDER BY datetime(t.as_of) DESC, t.id DESC
+        ) AS rn
+      FROM summaries t
+    )
     SELECT s.code AS stock_code, s.name AS stock_name, x.id AS summary_id, x.as_of, x.line1
     FROM stocks s
-    LEFT JOIN (
-      SELECT t.*
-      FROM summaries t
-      JOIN (
-        SELECT stock_code, MAX(datetime(as_of)) AS max_as_of
-        FROM summaries
-        GROUP BY stock_code
-      ) m ON m.stock_code = t.stock_code AND datetime(t.as_of) = m.max_as_of
-    ) x ON x.stock_code = s.code
+    LEFT JOIN ranked x ON x.stock_code = s.code AND x.rn = 1
     WHERE s.is_active = 1
     ORDER BY s.market, COALESCE(s.rank, 99999), s.code
     """
@@ -1103,17 +1192,18 @@ def latest_summaries_by_stock(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 def latest_summary_highlights(conn: sqlite3.Connection, limit: int = 12) -> list[sqlite3.Row]:
     sql = """
+    WITH ranked AS (
+      SELECT
+        t.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY t.stock_code
+          ORDER BY datetime(t.as_of) DESC, t.id DESC
+        ) AS rn
+      FROM summaries t
+    )
     SELECT s.code AS stock_code, s.name AS stock_name, s.market, x.as_of, x.line1
     FROM stocks s
-    JOIN (
-      SELECT t.*
-      FROM summaries t
-      JOIN (
-        SELECT stock_code, MAX(datetime(as_of)) AS max_as_of
-        FROM summaries
-        GROUP BY stock_code
-      ) m ON m.stock_code = t.stock_code AND datetime(t.as_of) = m.max_as_of
-    ) x ON x.stock_code = s.code
+    JOIN ranked x ON x.stock_code = s.code AND x.rn = 1
     WHERE s.is_active = 1
     ORDER BY datetime(x.as_of) DESC, s.market, COALESCE(s.rank, 99999), s.code
     LIMIT ?
@@ -1326,6 +1416,30 @@ def _migrate_stocks_table(conn: sqlite3.Connection) -> None:
         alter_statements.append("ALTER TABLE stocks ADD COLUMN rank INTEGER")
     for statement in alter_statements:
         conn.execute(statement)
+
+
+def _migrate_documents_relevance_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+    alter_statements: list[str] = []
+    if "relevance_score" not in columns:
+        alter_statements.append("ALTER TABLE documents ADD COLUMN relevance_score REAL NOT NULL DEFAULT 0")
+    if "relevance_reason" not in columns:
+        alter_statements.append("ALTER TABLE documents ADD COLUMN relevance_reason TEXT")
+    if "matched_alias" not in columns:
+        alter_statements.append("ALTER TABLE documents ADD COLUMN matched_alias TEXT")
+    for statement in alter_statements:
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_documents_stock_type_relevance ON documents(
+            stock_code,
+            doc_type,
+            relevance_score DESC,
+            COALESCE(published_at, collected_at) DESC
+        )
+        """
+    )
 
 
 def _migrate_naver_finance_research_urls(conn: sqlite3.Connection) -> None:

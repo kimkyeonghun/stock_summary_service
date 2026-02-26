@@ -37,6 +37,7 @@ class SectorSummaryBuilder:
         result = self.llm.generate_json(
             system_prompt=_sector_system_prompt(),
             user_prompt=_sector_user_prompt(sector_code, sector_name, docs),
+            purpose="sector_summary",
         )
         if result is None:
             return None
