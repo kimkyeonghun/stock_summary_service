@@ -215,7 +215,12 @@ CREATE INDEX IF NOT EXISTS idx_sector_summary_sources_summary ON sector_summary_
 CREATE TABLE IF NOT EXISTS item_summaries (
     item_id INTEGER PRIMARY KEY,
     short_summary TEXT NOT NULL,
+    impact_label TEXT NOT NULL DEFAULT 'neutral',
+    feed_one_liner TEXT,
+    detail_bullets_json TEXT NOT NULL DEFAULT '[]',
+    related_refs_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
     FOREIGN KEY(item_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 
@@ -326,6 +331,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     _migrate_stocks_table(conn)
     _migrate_documents_relevance_columns(conn)
+    _migrate_item_summaries_columns(conn)
     if _get_app_meta(conn, MIGRATION_NFR_URLS_KEY) != "done":
         _migrate_naver_finance_research_urls(conn)
         _set_app_meta(conn, MIGRATION_NFR_URLS_KEY, "done")
@@ -1439,6 +1445,28 @@ def _migrate_documents_relevance_columns(conn: sqlite3.Connection) -> None:
             COALESCE(published_at, collected_at) DESC
         )
         """
+    )
+
+
+def _migrate_item_summaries_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(item_summaries)").fetchall()}
+    alter_statements: list[str] = []
+    if "impact_label" not in columns:
+        alter_statements.append("ALTER TABLE item_summaries ADD COLUMN impact_label TEXT NOT NULL DEFAULT 'neutral'")
+    if "feed_one_liner" not in columns:
+        alter_statements.append("ALTER TABLE item_summaries ADD COLUMN feed_one_liner TEXT")
+    if "detail_bullets_json" not in columns:
+        alter_statements.append("ALTER TABLE item_summaries ADD COLUMN detail_bullets_json TEXT NOT NULL DEFAULT '[]'")
+    if "related_refs_json" not in columns:
+        alter_statements.append("ALTER TABLE item_summaries ADD COLUMN related_refs_json TEXT NOT NULL DEFAULT '[]'")
+    if "updated_at" not in columns:
+        alter_statements.append("ALTER TABLE item_summaries ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+    for statement in alter_statements:
+        conn.execute(statement)
+    now_iso = now_utc_iso()
+    conn.execute(
+        "UPDATE item_summaries SET updated_at = ? WHERE COALESCE(updated_at, '') = ''",
+        (now_iso,),
     )
 
 

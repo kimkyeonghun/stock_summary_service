@@ -2,6 +2,7 @@
 
 import atexit
 import json
+import math
 import os
 import re
 import uuid
@@ -33,7 +34,7 @@ from stock_mvp.prices import PriceCollector
 from stock_mvp.sector_mapping import sync_sector_mapping_for_active_stocks
 from stock_mvp.stocks import DEFAULT_STOCKS
 from stock_mvp.universe import UniverseRefresher
-from stock_mvp.utils import compact_text, document_identity_key
+from stock_mvp.utils import compact_text, document_identity_key, normalize_url
 
 
 def create_app(settings: Settings | None = None) -> Flask:
@@ -132,6 +133,8 @@ def create_app(settings: Settings | None = None) -> Flask:
                         "as_of": str(latest_row["digest_date"] or "") if latest_row else "",
                     }
                 )
+            feed_source_codes = subscribed_stock_codes if subscribed_stock_codes else [str(r["code"]) for r in market_stocks]
+            feed_items = _latest_item_feed(conn, market=market_norm, stock_codes=feed_source_codes, limit=30)
 
         rows = rows[:20]
         return render_template(
@@ -142,6 +145,8 @@ def create_app(settings: Settings | None = None) -> Flask:
             rows=rows,
             subscribed_stocks=subscribed_stocks,
             subscribed_sectors=subscribed_sectors,
+            feed_items=feed_items,
+            feed_has_more=len(feed_items) > 10,
             has_subscriptions=bool(subscribed_stocks or subscribed_sectors),
         )
 
@@ -242,8 +247,10 @@ def create_app(settings: Settings | None = None) -> Flask:
             digest_view = _build_digest_view(conn, digest_row)
             report_view = _latest_agent_report(conn, entity_type="ticker", entity_id=code_norm, market=market_norm)
             item_summary_rows = _latest_item_summaries(conn, code_norm, limit=50)
-            news_rows = latest_documents_by_type(conn, code_norm, doc_type="news", limit=100, order_by=doc_sort)
-            report_rows = latest_documents_by_type(conn, code_norm, doc_type="report", limit=100, order_by=doc_sort)
+            news_rows_raw = latest_documents_by_type(conn, code_norm, doc_type="news", limit=240, order_by=doc_sort)
+            report_rows_raw = latest_documents_by_type(conn, code_norm, doc_type="report", limit=180, order_by=doc_sort)
+            news_rows = _curate_document_rows(news_rows_raw, doc_type="news", limit=100)
+            report_rows = _curate_document_rows(report_rows_raw, doc_type="report", limit=100)
             sector_briefs: list[dict[str, str]] = []
             for sector_row in sector_rows:
                 sector_code = str(sector_row["sector_code"])
@@ -282,6 +289,27 @@ def create_app(settings: Settings | None = None) -> Flask:
             doc_sort=doc_sort,
             doc_initial_limit=10,
             is_subscribed=subscribed,
+        )
+
+    @app.route("/<market>/item/<int:item_id>")
+    def item_detail(market: str, item_id: int):
+        market_norm = _normalize_market_or_404(market)
+        _set_session_market(market_norm)
+        with connect(cfg.db_path) as conn:
+            row = _item_detail_payload(conn, item_id=item_id)
+            if row is None:
+                return redirect(url_for("dashboard", market=market_norm.lower()))
+            stock_market = str(row["market"]).upper()
+            if stock_market != market_norm:
+                return redirect(url_for("item_detail", market=stock_market.lower(), item_id=item_id))
+            related_rows = _related_documents_for_item(conn, stock_code=str(row["stock_code"]), exclude_item_id=item_id, limit=10)
+        return render_template(
+            "item_detail.html",
+            current_market=market_norm,
+            nav_links=_nav_links(market_norm),
+            active_page="dashboard",
+            item=row,
+            related_rows=related_rows,
         )
 
     def _run_collect_now():
@@ -863,17 +891,86 @@ def _latest_agent_report(conn, *, entity_type: str, entity_id: str, market: str)
     return payload
 
 
+def _latest_item_feed(conn, *, market: str, stock_codes: list[str], limit: int) -> list[dict[str, Any]]:
+    if not stock_codes:
+        return []
+    placeholders = ",".join("?" for _ in stock_codes)
+    rows = conn.execute(
+        f"""
+        SELECT
+          i.item_id,
+          i.short_summary,
+          i.impact_label,
+          i.feed_one_liner,
+          i.detail_bullets_json,
+          i.related_refs_json,
+          d.stock_code,
+          s.name AS stock_name,
+          d.doc_type,
+          d.title,
+          d.url,
+          d.source,
+          COALESCE(d.published_at, d.collected_at) AS published_at,
+          d.relevance_score,
+          d.matched_alias
+        FROM item_summaries i
+        JOIN documents d ON d.id = i.item_id
+        JOIN stocks s ON s.code = d.stock_code
+        WHERE lower(s.market) = lower(?)
+          AND d.stock_code IN ({placeholders})
+        ORDER BY datetime(COALESCE(d.published_at, d.collected_at)) DESC, i.item_id DESC
+        LIMIT ?
+        """,
+        (market, *stock_codes, max(1, limit * 4)),
+    ).fetchall()
+    curated_rows = _curate_item_summary_rows(rows, limit=limit)
+    output: list[dict[str, Any]] = []
+    for raw in curated_rows:
+        impact = _impact_view(str(raw.get("impact_label") or "neutral"))
+        bullets = _safe_json_loads(raw.get("detail_bullets_json"), default=[])
+        refs = _safe_json_loads(raw.get("related_refs_json"), default=[])
+        one_liner = _item_one_liner(raw)
+        output.append(
+            {
+                "item_id": int(raw["item_id"]),
+                "stock_code": str(raw["stock_code"]),
+                "stock_name": str(raw["stock_name"]),
+                "title": str(raw.get("title") or ""),
+                "url": str(raw.get("url") or ""),
+                "source": str(raw.get("source") or ""),
+                "published_at": str(raw.get("published_at") or ""),
+                "impact_label": impact["impact_label"],
+                "impact_emoji": impact["impact_emoji"],
+                "impact_text": impact["impact_text"],
+                "impact_css": impact["impact_css"],
+                "show_impact": impact["show_impact"],
+                "feed_one_liner": str(raw.get("feed_one_liner") or ""),
+                "one_liner": one_liner,
+                "detail_bullets": bullets if isinstance(bullets, list) else [],
+                "related_refs": refs if isinstance(refs, list) else [],
+            }
+        )
+    return output
+
+
 def _latest_item_summaries(conn, stock_code: str, *, limit: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT
           i.item_id,
           i.short_summary,
+          i.impact_label,
+          i.feed_one_liner,
+          i.detail_bullets_json,
+          i.related_refs_json,
           i.created_at,
+          d.doc_type,
           d.title,
           d.url,
           d.source,
           COALESCE(d.published_at, d.collected_at) AS published_at,
+          d.relevance_score,
+          d.matched_alias,
           e.card_id
         FROM item_summaries i
         JOIN documents d ON d.id = i.item_id
@@ -882,14 +979,442 @@ def _latest_item_summaries(conn, stock_code: str, *, limit: int) -> list[dict[st
         ORDER BY datetime(COALESCE(d.published_at, d.collected_at)) DESC, i.item_id DESC
         LIMIT ?
         """,
-        (stock_code, max(1, limit)),
+        (stock_code, max(1, limit * 4)),
     ).fetchall()
+    curated_rows = _curate_item_summary_rows(rows, limit=limit)
     result: list[dict[str, Any]] = []
-    for row in rows:
-        raw = dict(row)
+    for raw in curated_rows:
         raw["summary_lines"] = [compact_text(x) for x in str(raw.get("short_summary") or "").splitlines() if compact_text(x)]
+        raw["detail_bullets"] = _safe_json_loads(raw.get("detail_bullets_json"), default=[])
+        raw["related_refs"] = _safe_json_loads(raw.get("related_refs_json"), default=[])
+        raw.update(_impact_view(str(raw.get("impact_label") or "neutral")))
+        raw["one_liner"] = _item_one_liner(raw)
         result.append(raw)
     return result
+
+
+def _item_detail_payload(conn, *, item_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT
+          i.item_id,
+          i.short_summary,
+          i.impact_label,
+          i.feed_one_liner,
+          i.detail_bullets_json,
+          i.related_refs_json,
+          i.created_at,
+          d.stock_code,
+          s.name AS stock_name,
+          s.market,
+          d.title,
+          d.url,
+          d.source,
+          COALESCE(d.published_at, d.collected_at) AS published_at
+        FROM item_summaries i
+        JOIN documents d ON d.id = i.item_id
+        JOIN stocks s ON s.code = d.stock_code
+        WHERE i.item_id = ?
+        LIMIT 1
+        """,
+        (item_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    payload = dict(row)
+    payload["summary_lines"] = [compact_text(x) for x in str(payload.get("short_summary") or "").splitlines() if compact_text(x)]
+    payload["detail_bullets"] = _safe_json_loads(payload.get("detail_bullets_json"), default=[])
+    payload["related_refs"] = _safe_json_loads(payload.get("related_refs_json"), default=[])
+    payload.update(_impact_view(str(payload.get("impact_label") or "neutral")))
+    payload["one_liner"] = _item_one_liner(payload)
+    return payload
+
+
+def _related_documents_for_item(conn, *, stock_code: str, exclude_item_id: int, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT
+          id,
+          title,
+          url,
+          source,
+          COALESCE(published_at, collected_at) AS published_at
+        FROM documents
+        WHERE stock_code = ?
+          AND id != ?
+        ORDER BY datetime(COALESCE(published_at, collected_at)) DESC, id DESC
+        LIMIT ?
+        """,
+        (stock_code, exclude_item_id, max(1, limit * 4)),
+    ).fetchall()
+    return _curate_document_rows(rows, doc_type="", limit=limit, apply_relevance=False)
+
+
+def _curate_item_summary_rows(rows: list[Any], *, limit: int) -> list[dict[str, Any]]:
+    ranked_rows = _rank_rows_for_display(rows, doc_type="mixed")
+    output: list[dict[str, Any]] = []
+    seen_url_by_scope: dict[str, set[str]] = {}
+    seen_title_by_scope: dict[str, set[str]] = {}
+    seen_title_norm_by_scope: dict[str, list[tuple[str, set[str]]]] = {}
+    for raw in ranked_rows:
+        scope = str(raw.get("stock_code") or "").upper()
+        doc_type = str(raw.get("doc_type") or "").strip().lower() or "news"
+        if not _is_displayable_doc(raw, doc_type=doc_type):
+            continue
+        seen_url = seen_url_by_scope.setdefault(scope, set())
+        seen_title = seen_title_by_scope.setdefault(scope, set())
+        seen_title_norms = seen_title_norm_by_scope.setdefault(scope, [])
+        url_key = normalize_url(str(raw.get("url") or ""))
+        title_key = _title_cluster_key(str(raw.get("title") or ""))
+        title_norm, title_tokens = _normalize_title_for_similarity(str(raw.get("title") or ""))
+        if url_key and url_key in seen_url:
+            continue
+        if title_key and title_key in seen_title:
+            continue
+        if title_norm and _is_similar_title_seen(title_norm, title_tokens, seen_title_norms):
+            continue
+        if url_key:
+            seen_url.add(url_key)
+        if title_key:
+            seen_title.add(title_key)
+        if title_norm:
+            seen_title_norms.append((title_norm, title_tokens))
+        output.append(raw)
+        if len(output) >= max(1, limit):
+            break
+    return output
+
+
+def _curate_document_rows(
+    rows: list[Any],
+    *,
+    doc_type: str,
+    limit: int,
+    apply_relevance: bool = True,
+) -> list[dict[str, Any]]:
+    ranked_rows = _rank_rows_for_display(rows, doc_type=doc_type) if apply_relevance else [dict(r) for r in rows]
+    output: list[dict[str, Any]] = []
+    seen_url_by_scope: dict[str, set[str]] = {}
+    seen_title_by_scope: dict[str, set[str]] = {}
+    seen_title_norm_by_scope: dict[str, list[tuple[str, set[str]]]] = {}
+    for raw in ranked_rows:
+        scope = str(raw.get("stock_code") or "").upper()
+        if apply_relevance and not _is_displayable_doc(raw, doc_type=doc_type):
+            continue
+        seen_url = seen_url_by_scope.setdefault(scope, set())
+        seen_title = seen_title_by_scope.setdefault(scope, set())
+        seen_title_norms = seen_title_norm_by_scope.setdefault(scope, [])
+        url_key = normalize_url(str(raw.get("url") or ""))
+        title_key = _title_cluster_key(str(raw.get("title") or ""))
+        title_norm, title_tokens = _normalize_title_for_similarity(str(raw.get("title") or ""))
+        if url_key and url_key in seen_url:
+            continue
+        if title_key and title_key in seen_title:
+            continue
+        if title_norm and _is_similar_title_seen(title_norm, title_tokens, seen_title_norms):
+            continue
+        if url_key:
+            seen_url.add(url_key)
+        if title_key:
+            seen_title.add(title_key)
+        if title_norm:
+            seen_title_norms.append((title_norm, title_tokens))
+        output.append(raw)
+        if len(output) >= max(1, limit):
+            break
+    return output
+
+
+def _rank_rows_for_display(rows: list[Any], *, doc_type: str) -> list[dict[str, Any]]:
+    raw_rows = [dict(r) for r in rows]
+    if not raw_rows:
+        return raw_rows
+
+    token_sets: list[set[str]] = []
+    for row in raw_rows:
+        _norm, tokens = _normalize_title_for_similarity(str(row.get("title") or ""))
+        token_sets.append(tokens)
+
+    n = len(raw_rows)
+    neighbors: list[list[tuple[int, float]]] = [[] for _ in range(n)]
+    degree_scores = [0.0 for _ in range(n)]
+
+    for i in range(n):
+        tokens_i = token_sets[i]
+        if not tokens_i:
+            continue
+        for j in range(i + 1, n):
+            tokens_j = token_sets[j]
+            if not tokens_j:
+                continue
+            overlap = len(tokens_i & tokens_j)
+            if overlap < 2:
+                continue
+            base = min(len(tokens_i), len(tokens_j))
+            if base <= 0:
+                continue
+            sim = overlap / base
+            if sim < 0.34:
+                continue
+            w = min(1.0, sim)
+            neighbors[i].append((j, w))
+            neighbors[j].append((i, w))
+            degree_scores[i] += w
+            degree_scores[j] += w
+
+    eigen = _power_iteration_centrality(neighbors)
+    degree_norm = _min_max_norm(degree_scores)
+    centrality = [
+        (0.65 * eigen[i]) + (0.35 * degree_norm[i])
+        for i in range(n)
+    ]
+
+    event_ts = [_event_timestamp(str(r.get("published_at") or r.get("collected_at") or "")) for r in raw_rows]
+    fresh = _min_max_norm(event_ts)
+
+    for i, row in enumerate(raw_rows):
+        relevance = _clamp01(_to_float(row.get("relevance_score")) or 0.0)
+        source = str(row.get("source") or "").strip().lower()
+        source_prior = _source_rank_prior(source=source, doc_type=doc_type)
+        rank_score = (
+            0.45 * relevance
+            + 0.35 * centrality[i]
+            + 0.15 * fresh[i]
+            + 0.05 * source_prior
+        )
+        row["_rank_score"] = round(rank_score, 6)
+        row["_rank_centrality"] = round(centrality[i], 6)
+        row["_rank_relevance"] = round(relevance, 6)
+        row["_rank_freshness"] = round(fresh[i], 6)
+
+    raw_rows.sort(
+        key=lambda r: (
+            float(r.get("_rank_score") or 0.0),
+            _event_timestamp(str(r.get("published_at") or r.get("collected_at") or "")),
+            int(r.get("id") or 0),
+        ),
+        reverse=True,
+    )
+    return raw_rows
+
+
+def _power_iteration_centrality(neighbors: list[list[tuple[int, float]]], max_iter: int = 30) -> list[float]:
+    n = len(neighbors)
+    if n == 0:
+        return []
+    if all(len(v) == 0 for v in neighbors):
+        return [0.0 for _ in range(n)]
+
+    vec = [1.0 / n for _ in range(n)]
+    for _ in range(max_iter):
+        new_vec = [0.0 for _ in range(n)]
+        for i in range(n):
+            total = 0.0
+            for j, w in neighbors[i]:
+                total += w * vec[j]
+            new_vec[i] = total
+        norm = math.sqrt(sum(v * v for v in new_vec))
+        if norm <= 1e-12:
+            break
+        new_vec = [v / norm for v in new_vec]
+        delta = sum(abs(new_vec[i] - vec[i]) for i in range(n))
+        vec = new_vec
+        if delta < 1e-6:
+            break
+    return _min_max_norm(vec)
+
+
+def _min_max_norm(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    low = min(values)
+    high = max(values)
+    if high - low <= 1e-12:
+        return [0.0 for _ in values]
+    return [(v - low) / (high - low) for v in values]
+
+
+def _event_timestamp(value: str) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(text)
+        return dt.timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _source_rank_prior(*, source: str, doc_type: str) -> float:
+    src = str(source or "").strip().lower()
+    kind = str(doc_type or "").strip().lower()
+    if kind == "report":
+        return 0.9
+    if src == "sec_edgar":
+        return 0.8
+    if src == "naver_finance_research":
+        return 0.75
+    if src == "naver_news":
+        return 0.55
+    return 0.5
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _is_displayable_doc(raw: dict[str, Any], *, doc_type: str) -> bool:
+    title = compact_text(str(raw.get("title") or ""))
+    if len(title) < 6:
+        return False
+    source = str(raw.get("source") or "").strip().lower()
+    score = _to_float(raw.get("relevance_score")) or 0.0
+    alias = compact_text(str(raw.get("matched_alias") or ""))
+    threshold = _display_threshold(doc_type=doc_type, source=source)
+    if alias:
+        return score >= max(0.08, threshold - 0.12)
+    return score >= threshold
+
+
+def _display_threshold(*, doc_type: str, source: str) -> float:
+    kind = str(doc_type or "").strip().lower()
+    src = str(source or "").strip().lower()
+    if kind == "report":
+        return 0.12
+    if src == "sec_edgar":
+        return 0.05
+    if src == "naver_news":
+        return 0.30
+    return 0.22
+
+
+def _title_cluster_key(title: str) -> str:
+    value = compact_text(title).lower()
+    if not value:
+        return ""
+    value = re.sub(r"\[[^\]]{1,40}\]", " ", value)
+    value = re.sub(r"\([^)]{1,40}\)", " ", value)
+    value = re.sub(r"[^0-9a-z가-힣]+", " ", value)
+    tokens = [tok for tok in value.split() if tok and len(tok) > 1]
+    if not tokens:
+        return ""
+    return " ".join(tokens[:12])
+
+
+def _normalize_title_for_similarity(title: str) -> tuple[str, set[str]]:
+    value = compact_text(title).lower()
+    if not value:
+        return "", set()
+    value = re.sub(r"\[[^\]]{1,40}\]", " ", value)
+    value = re.sub(r"\([^)]{1,40}\)", " ", value)
+    value = re.sub(r"[^0-9a-z가-힣]+", " ", value)
+    stopwords = {"속보", "단독", "종합", "영상", "인터뷰", "기자", "뉴스", "리포트", "증권"}
+    tokens = [tok for tok in value.split() if len(tok) > 1 and tok not in stopwords]
+    if not tokens:
+        return "", set()
+    normalized = " ".join(tokens[:20])
+    return normalized, set(tokens[:20])
+
+
+def _is_similar_title_seen(
+    current_title: str,
+    current_tokens: set[str],
+    seen_titles: list[tuple[str, set[str]]],
+) -> bool:
+    if not current_title:
+        return False
+    for seen_title, seen_tokens in seen_titles:
+        if current_title == seen_title:
+            return True
+        if len(current_title) >= 12 and len(seen_title) >= 12:
+            if current_title in seen_title or seen_title in current_title:
+                return True
+        if not current_tokens or not seen_tokens:
+            continue
+        overlap = len(current_tokens & seen_tokens)
+        small = min(len(current_tokens), len(seen_tokens))
+        large = max(len(current_tokens), len(seen_tokens))
+        if small > 0 and overlap >= 3 and (overlap / small) >= 0.8:
+            return True
+        if large > 0 and overlap >= 4 and (overlap / large) >= 0.67:
+            return True
+    return False
+
+
+def _impact_view(impact_label: str) -> dict[str, str]:
+    label = (impact_label or "neutral").strip().lower()
+    if label == "positive":
+        return {
+            "impact_label": "positive",
+            "impact_emoji": "😀",
+            "impact_text": "호재",
+            "impact_css": "text-emerald-600",
+            "show_impact": "1",
+        }
+    if label == "negative":
+        return {
+            "impact_label": "negative",
+            "impact_emoji": "😡",
+            "impact_text": "악재",
+            "impact_css": "text-red-600",
+            "show_impact": "1",
+        }
+    return {
+        "impact_label": "neutral",
+        "impact_emoji": "",
+        "impact_text": "",
+        "impact_css": "text-gray-500",
+        "show_impact": "",
+    }
+
+
+def _item_one_liner(raw: dict[str, Any]) -> str:
+    title = compact_text(str(raw.get("title") or ""))
+    direct = compact_text(str(raw.get("feed_one_liner") or ""))
+    if direct and not _is_title_like(direct, title):
+        return direct[:120]
+    short_summary = str(raw.get("short_summary") or "")
+    fallback_line = ""
+    if short_summary:
+        for line in short_summary.splitlines():
+            cleaned = _clean_summary_line(line)
+            if cleaned:
+                if not fallback_line:
+                    fallback_line = cleaned
+                if not _is_title_like(cleaned, title):
+                    return cleaned[:120]
+    if direct:
+        return direct[:120]
+    if fallback_line:
+        return fallback_line[:120]
+    return title[:120]
+
+
+def _clean_summary_line(text: str) -> str:
+    value = compact_text(str(text or ""))
+    if not value:
+        return ""
+    value = re.sub(r"^\[(FACT|INTERPRETATION|RISK)\]\s*", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\(src:\s*ITEM-[^)]+\)", "", value, flags=re.IGNORECASE)
+    value = compact_text(value)
+    return value
+
+
+def _is_title_like(candidate: str, title: str) -> bool:
+    c = re.sub(r"\s+", " ", compact_text(candidate)).strip().lower()
+    t = re.sub(r"\s+", " ", compact_text(title)).strip().lower()
+    if not c or not t:
+        return False
+    if c == t:
+        return True
+    if c in t or t in c:
+        return True
+    c_tokens = [tok for tok in re.split(r"[^\w가-힣]+", c) if tok]
+    t_tokens = {tok for tok in re.split(r"[^\w가-힣]+", t) if tok}
+    if not c_tokens or not t_tokens:
+        return False
+    overlap = sum(1 for tok in c_tokens if tok in t_tokens)
+    return overlap / max(1, len(c_tokens)) >= 0.7
 
 
 def _build_digest_view(conn, digest_row: dict[str, Any] | None) -> dict[str, Any] | None:

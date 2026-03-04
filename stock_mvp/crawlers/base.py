@@ -19,6 +19,8 @@ class BaseCrawler(ABC):
         if self.verify is False:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         self.session = requests.Session()
+        # Do not inherit system proxy variables by default.
+        self.session.trust_env = settings.crawler_trust_env
         self.session.headers.update(
             {
                 "User-Agent": (

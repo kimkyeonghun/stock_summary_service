@@ -22,6 +22,7 @@ class Settings:
     ops_error_alert_threshold: int
     enable_telegram_error_alert: bool
     request_timeout_sec: int
+    crawler_trust_env: bool
     verify_ssl: bool
     ca_bundle_path: str
     enable_pdf_ocr_fallback: bool
@@ -34,6 +35,9 @@ class Settings:
     naver_finance_reports_per_stock: int
     sec_reports_per_stock: int
     summary_lookback_days: int
+    collect_store_all_docs: bool
+    summary_top_n_per_stock: int
+    summary_min_relevance: float
     naver_client_id: str
     naver_client_secret: str
     telegram_bot_token: str
@@ -85,6 +89,7 @@ def load_settings() -> Settings:
         ops_error_alert_threshold=int(os.getenv("OPS_ERROR_ALERT_THRESHOLD", "5")),
         enable_telegram_error_alert=_parse_bool(os.getenv("ENABLE_TELEGRAM_ERROR_ALERT", "false")),
         request_timeout_sec=int(os.getenv("REQUEST_TIMEOUT_SEC", "10")),
+        crawler_trust_env=_parse_bool(os.getenv("CRAWLER_TRUST_ENV", "false")),
         verify_ssl=_parse_bool(os.getenv("VERIFY_SSL", "true"), default=True),
         ca_bundle_path=os.getenv("CA_BUNDLE_PATH", "").strip(),
         enable_pdf_ocr_fallback=_parse_bool(os.getenv("ENABLE_PDF_OCR_FALLBACK", "false")),
@@ -99,6 +104,9 @@ def load_settings() -> Settings:
         ),
         sec_reports_per_stock=int(os.getenv("SEC_REPORTS_PER_STOCK", os.getenv("REPORTS_PER_STOCK", "10"))),
         summary_lookback_days=int(os.getenv("SUMMARY_LOOKBACK_DAYS", "7")),
+        collect_store_all_docs=_parse_bool(os.getenv("COLLECT_STORE_ALL_DOCS", "true"), default=True),
+        summary_top_n_per_stock=int(os.getenv("SUMMARY_TOP_N_PER_STOCK", "10")),
+        summary_min_relevance=float(os.getenv("SUMMARY_MIN_RELEVANCE", "0")),
         naver_client_id=os.getenv("NAVER_CLIENT_ID", "").strip(),
         naver_client_secret=os.getenv("NAVER_CLIENT_SECRET", "").strip(),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),

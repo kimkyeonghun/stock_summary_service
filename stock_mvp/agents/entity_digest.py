@@ -1,14 +1,32 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from typing import Any
 
 from stock_mvp.agents.base import AgentStats, date_days_ago, iso_date_utc
+from stock_mvp.config import Settings, load_settings
+from stock_mvp.llm_client import LLMClient
 from stock_mvp.storage import digest_repo, evidence_repo
 from stock_mvp.utils import compact_text
 
 
+LINE_LABELS = [
+    "[Core Fact]",
+    "[Core Fact]",
+    "[Earnings/Numbers]",
+    "[Demand/Sector]",
+    "[Interpretation]",
+    "[Interpretation]",
+    "[Risk]",
+    "[Bottom line]",
+]
+
+
 class EntityDigestAgent:
+    def __init__(self, settings: Settings | None = None):
+        self.settings = settings or load_settings()
+        self.llm = LLMClient(self.settings)
+
     def run(
         self,
         conn,
@@ -77,7 +95,6 @@ class EntityDigestAgent:
         aliases = self._make_aliases(cards)
         refs = [{"alias": aliases[c["card_id"]], "card_id": c["card_id"], "item_id": c["item_id"]} for c in cards[:20]]
 
-        summary_lines = self._build_8_lines(cards, aliases)
         previous = digest_repo.get_previous_digest(
             conn,
             entity_type=entity_type,
@@ -85,6 +102,26 @@ class EntityDigestAgent:
             market=market,
             digest_date=end_date,
         )
+
+        llm_payload = self._build_with_llm(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            market=market,
+            start_date=start_date,
+            end_date=end_date,
+            cards=cards,
+            aliases=aliases,
+            previous=previous,
+        )
+        if llm_payload is not None:
+            return {
+                "summary_8line": llm_payload["summary_8line"],
+                "change_3": llm_payload["change_3"],
+                "open_questions": llm_payload["open_questions"],
+                "refs": refs,
+            }
+
+        summary_lines = self._build_8_lines(cards, aliases)
         change_3 = self._build_change_3(cards, aliases, previous)
         open_q = self._build_open_questions(cards, aliases)
         return {
@@ -123,7 +160,6 @@ class EntityDigestAgent:
                 limit=200,
             )
 
-        # Daily digest default scope is news + research.
         return [c for c in cards if str(c.get("source_type") or "") in {"news", "research"}]
 
     @staticmethod
@@ -132,6 +168,97 @@ class EntityDigestAgent:
         for idx, card in enumerate(cards, start=1):
             aliases[card["card_id"]] = f"C{idx}"
         return aliases
+
+    def _build_with_llm(
+        self,
+        *,
+        entity_type: str,
+        entity_id: str,
+        market: str,
+        start_date: str,
+        end_date: str,
+        cards: list[dict[str, Any]],
+        aliases: dict[str, str],
+        previous: dict[str, Any] | None,
+    ) -> dict[str, str] | None:
+        if not self.llm.enabled():
+            return None
+
+        result = self.llm.generate_json(
+            system_prompt=_digest_system_prompt(),
+            user_prompt=_digest_user_prompt(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                market=market,
+                start_date=start_date,
+                end_date=end_date,
+                cards=cards,
+                aliases=aliases,
+                previous=previous,
+            ),
+            purpose="daily_digest",
+        )
+        if result is None:
+            return None
+
+        parsed = _parse_digest_payload(result.payload, alias_values=set(aliases.values()))
+        if parsed is None:
+            print(
+                f"[WARN] entity_digest llm invalid payload: entity_type={entity_type} "
+                f"entity_id={entity_id} keys={list(result.payload.keys())[:8]}"
+            )
+            return None
+
+        summary_8line = self._compose_8line_from_payload(parsed["summary_lines"])
+        change_3 = self._compose_change_from_payload(parsed["change_lines"])
+        open_questions = self._compose_questions_from_payload(parsed["open_questions"])
+        return {
+            "summary_8line": summary_8line,
+            "change_3": change_3,
+            "open_questions": open_questions,
+        }
+
+    def _compose_8line_from_payload(self, lines: list[dict[str, Any]]) -> str:
+        out: list[str] = []
+        for idx, item in enumerate(lines[:8]):
+            text = compact_text(str(item.get("text") or "")) or "No material update."
+            cards = [compact_text(str(x)) for x in list(item.get("cards") or []) if compact_text(str(x))]
+            card_text = ",".join(cards[:3]) if cards else "-"
+            out.append(f"{idx + 1}) {LINE_LABELS[idx]} {text} (cards: {card_text})")
+        while len(out) < 8:
+            idx = len(out)
+            out.append(f"{idx + 1}) {LINE_LABELS[idx]} No material update. (cards: -)")
+        return "\n".join(out[:8])
+
+    @staticmethod
+    def _compose_change_from_payload(change_lines: list[dict[str, Any]]) -> str:
+        if not change_lines:
+            return "No material change"
+        out: list[str] = []
+        for item in change_lines[:3]:
+            sign = compact_text(str(item.get("sign") or "+"))
+            if sign not in {"+", "-"}:
+                sign = "+"
+            text = compact_text(str(item.get("text") or "No material change"))
+            cards = [compact_text(str(x)) for x in list(item.get("cards") or []) if compact_text(str(x))]
+            card_text = ",".join(cards[:3]) if cards else "-"
+            out.append(f"{sign} {text} (cards: {card_text})")
+        return "\n".join(out) if out else "No material change"
+
+    @staticmethod
+    def _compose_questions_from_payload(open_questions: list[dict[str, Any]]) -> str:
+        out: list[str] = []
+        for idx, item in enumerate(open_questions[:2], start=1):
+            text = compact_text(str(item.get("text") or ""))
+            if not text:
+                continue
+            cards = [compact_text(str(x)) for x in list(item.get("cards") or []) if compact_text(str(x))]
+            card_text = ",".join(cards[:2]) if cards else "-"
+            out.append(f"Q{idx}) {text} (cards: {card_text})")
+        while len(out) < 2:
+            idx = len(out) + 1
+            out.append(f"Q{idx}) Additional evidence is needed (cards: -)")
+        return "\n".join(out[:2])
 
     def _build_8_lines(self, cards: list[dict[str, Any]], aliases: dict[str, str]) -> list[str]:
         if not cards:
@@ -252,6 +379,138 @@ class EntityDigestAgent:
         q1 = f"Q1) Can the {topic} signal be confirmed by the next disclosure or research update? (cards: {first_alias})"
         q2 = f"Q2) How material is the current risk factor to the next period outcome? (cards: {first_alias})"
         return f"{q1}\n{q2}"
+
+
+def _digest_system_prompt() -> str:
+    return (
+        "You are a market digest writer for beginner investors. Return JSON only. "
+        "Required keys: summary_lines, change_3, open_questions. "
+        "summary_lines must be exactly 8 items. "
+        "Each summary line item: {text, cards}. cards must contain aliases like C1,C2. "
+        "change_3 should be up to 3 items with {sign,text,cards}. sign is '+' or '-'. "
+        "open_questions should be exactly 2 items with {text,cards}. "
+        "No investment recommendation language."
+    )
+
+
+def _digest_user_prompt(
+    *,
+    entity_type: str,
+    entity_id: str,
+    market: str,
+    start_date: str,
+    end_date: str,
+    cards: list[dict[str, Any]],
+    aliases: dict[str, str],
+    previous: dict[str, Any] | None,
+) -> str:
+    card_rows: list[dict[str, Any]] = []
+    for card in cards[:40]:
+        card_rows.append(
+            {
+                "alias": aliases.get(card["card_id"], ""),
+                "card_id": str(card.get("card_id") or ""),
+                "item_id": int(card.get("item_id") or 0),
+                "source_type": str(card.get("source_type") or ""),
+                "fact_headline": compact_text(str(card.get("fact_headline") or ""))[:180],
+                "facts": [compact_text(str(x))[:180] for x in list(card.get("facts") or [])[:2]],
+                "interpretation": compact_text(str(card.get("interpretation") or ""))[:180],
+                "risk_note": compact_text(str(card.get("risk_note") or ""))[:180],
+                "topics": [compact_text(str(x)) for x in list(card.get("topics") or [])[:4]],
+                "published_at": str(card.get("published_at") or ""),
+            }
+        )
+    previous_payload = {
+        "summary_8line": str(previous.get("summary_8line") or "") if previous else "",
+        "change_3": str(previous.get("change_3") or "") if previous else "",
+    }
+    payload = {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "market": market,
+        "period": {"start_date": start_date, "end_date": end_date},
+        "line_labels": LINE_LABELS,
+        "cards": card_rows,
+        "previous_digest": previous_payload,
+    }
+    return f"Generate daily digest JSON from:\n{json.dumps(payload, ensure_ascii=False)}"
+
+
+def _parse_digest_payload(payload: dict[str, Any], *, alias_values: set[str]) -> dict[str, list[dict[str, Any]]] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    summary_raw = payload.get("summary_lines")
+    if not isinstance(summary_raw, list):
+        return None
+    summary_lines: list[dict[str, Any]] = []
+    for item in summary_raw:
+        if not isinstance(item, dict):
+            continue
+        text = compact_text(str(item.get("text") or ""))
+        if not text:
+            continue
+        cards = _normalize_aliases(item.get("cards"), alias_values=alias_values)
+        summary_lines.append({"text": text[:220], "cards": cards})
+        if len(summary_lines) >= 8:
+            break
+    if len(summary_lines) < 8:
+        return None
+
+    change_lines: list[dict[str, Any]] = []
+    change_raw = payload.get("change_3")
+    if isinstance(change_raw, list):
+        for item in change_raw:
+            if not isinstance(item, dict):
+                continue
+            text = compact_text(str(item.get("text") or ""))
+            if not text:
+                continue
+            sign = compact_text(str(item.get("sign") or "+"))
+            if sign not in {"+", "-"}:
+                sign = "+"
+            cards = _normalize_aliases(item.get("cards"), alias_values=alias_values)
+            change_lines.append({"sign": sign, "text": text[:220], "cards": cards})
+            if len(change_lines) >= 3:
+                break
+
+    open_raw = payload.get("open_questions")
+    if not isinstance(open_raw, list):
+        return None
+    open_questions: list[dict[str, Any]] = []
+    for item in open_raw:
+        if isinstance(item, dict):
+            text = compact_text(str(item.get("text") or ""))
+            cards = _normalize_aliases(item.get("cards"), alias_values=alias_values)
+        else:
+            text = compact_text(str(item))
+            cards = []
+        if not text:
+            continue
+        open_questions.append({"text": text[:220], "cards": cards})
+        if len(open_questions) >= 2:
+            break
+    if len(open_questions) < 2:
+        return None
+
+    return {
+        "summary_lines": summary_lines[:8],
+        "change_lines": change_lines[:3],
+        "open_questions": open_questions[:2],
+    }
+
+
+def _normalize_aliases(raw: Any, *, alias_values: set[str]) -> list[str]:
+    if isinstance(raw, str):
+        raw = [x for x in raw.replace(" ", "").split(",") if x]
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for x in raw:
+        alias = compact_text(str(x)).upper()
+        if alias and alias in alias_values and alias not in out:
+            out.append(alias)
+    return out[:3]
 
 
 def parse_digest_refs(refs_json_or_list: Any) -> list[dict[str, Any]]:

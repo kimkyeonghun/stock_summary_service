@@ -64,9 +64,9 @@ class PipelineBusyError(RuntimeError):
 class CollectionPipeline:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.item_summarizer_agent = ItemSummarizerAgent()
-        self.entity_digest_agent = EntityDigestAgent()
-        self.report_writer_agent = ReportWriterAgent()
+        self.item_summarizer_agent = ItemSummarizerAgent(settings)
+        self.entity_digest_agent = EntityDigestAgent(settings)
+        self.report_writer_agent = ReportWriterAgent(settings)
         self.financial_collector = FinancialCollector(settings)
         self.crawlers = [
             NaverNewsCrawler(settings),
@@ -79,6 +79,7 @@ class CollectionPipeline:
         stock_codes: list[str] | None = None,
         market: str | None = None,
         trigger_type: str = "manual",
+        include_agent_steps: bool = True,
         include_sector_steps: bool = True,
     ) -> PipelineStats:
         with connect(self.settings.db_path) as conn:
@@ -172,9 +173,10 @@ class CollectionPipeline:
                             stats.financial_snapshots_skipped += 1
                     conn.commit()
 
-                self._run_agent_steps(conn, selected=selected, include_sector_steps=include_sector_steps, stats=stats)
-                # Keep legacy field for pipeline_runs compatibility.
-                stats.summaries_written = stats.ticker_digests_written
+                if include_agent_steps:
+                    self._run_agent_steps(conn, selected=selected, include_sector_steps=include_sector_steps, stats=stats)
+                    # Keep legacy field for pipeline_runs compatibility.
+                    stats.summaries_written = stats.ticker_digests_written
 
                 finish_pipeline_run(
                     conn,
@@ -407,8 +409,7 @@ class CollectionPipeline:
         duration_ms = int((time.perf_counter() - start) * 1000)
         return docs, attempts, error_message, duration_ms
 
-    @staticmethod
-    def _filter_docs_by_relevance(stock: Stock, source: str, doc_type: str, docs: list) -> tuple[list, int]:
+    def _filter_docs_by_relevance(self, stock: Stock, source: str, doc_type: str, docs: list) -> tuple[list, int]:
         kept: list = []
         dropped = 0
         for doc in docs:
@@ -420,6 +421,17 @@ class CollectionPipeline:
                 source=source,
                 doc_type=doc_type,
             )
+            # Store-all mode: keep all collected docs and defer strict filtering to downstream ranking/UI.
+            if self.settings.collect_store_all_docs:
+                kept.append(
+                    replace(
+                        doc,
+                        relevance_score=result.score,
+                        relevance_reason=result.reason,
+                        matched_alias=result.matched_alias,
+                    )
+                )
+                continue
             if not passes_relevance(result, source=source, doc_type=doc_type):
                 dropped += 1
                 continue

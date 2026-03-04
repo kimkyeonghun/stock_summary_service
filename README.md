@@ -85,6 +85,13 @@ python scripts/run_collect.py --market KR
 python scripts/run_collect.py --market US --skip-sector
 ```
 
+Collect/store documents only (skip all summarization agents):
+
+```bash
+python scripts/run_collect.py --collect-only
+python scripts/run_collect.py --market KR --collect-only
+```
+
 You can rebuild sector-level deduped documents directly:
 
 ```bash
@@ -165,6 +172,11 @@ Source-specific collection limits:
 - `NAVER_FINANCE_REPORTS_PER_STOCK` (default `8`)
 - `SEC_REPORTS_PER_STOCK` (default `6`)
 
+Collection/summary flow controls:
+- `COLLECT_STORE_ALL_DOCS=true` (store all collected docs; do not drop by relevance at collect time)
+- `SUMMARY_TOP_N_PER_STOCK=10` (LLM summary candidate cap per stock within lookback)
+- `SUMMARY_MIN_RELEVANCE=0` (minimum relevance for summary candidate selection)
+
 Scheduler-related env vars:
 - `ENABLE_SCHEDULER=true`
 - `COLLECT_SCHEDULE_KST=00:00,06:00,12:00,18:00`
@@ -173,6 +185,7 @@ Scheduler-related env vars:
 - `UNIVERSE_REFRESH_DAY_OF_MONTH=1`
 - `UNIVERSE_REFRESH_TIME_KST=05:30`
 - `CRAWLER_MAX_RETRIES=1`
+- `CRAWLER_TRUST_ENV=false` (recommended; ignore system proxy env vars for crawler HTTP calls)
 - `OPS_ERROR_ALERT_THRESHOLD=5`
 - `ENABLE_TELEGRAM_ERROR_ALERT=false`
 - `ENABLE_PRICE_COLLECTION=true`

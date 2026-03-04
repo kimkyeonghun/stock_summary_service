@@ -161,13 +161,18 @@
     <ul class="mt-4 space-y-2">
       {% for row in item_summaries %}
       <li class="item-summary-row {% if loop.index > doc_initial_limit %}hidden extra-item-summary{% endif %} rounded-xl border border-gray-200 p-3">
-        <a href="{{ row['url'] }}" target="_blank" rel="noreferrer" class="text-sm font-medium {{ accent_link_class }}">{{ row['title'] }}</a>
-        <p class="mt-1 text-xs text-gray-500">{{ row['source'] }} / {{ row['published_at'] or '-' }} / card: {{ row['card_id'] or '-' }}</p>
-        <div class="mt-2 space-y-1">
-          {% for line in row['summary_lines'] %}
-          <p class="text-sm text-gray-900">{{ line }}</p>
-          {% endfor %}
-        </div>
+        <a href="{{ url_for('item_detail', market=current_market.lower(), item_id=row['item_id']) }}" class="block">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <p class="text-sm font-medium text-gray-900">{{ row['published_at'] or '-' }}</p>
+              {% if row['show_impact'] %}
+              <span class="text-sm {{ row['impact_css'] }}">{{ row['impact_emoji'] }} {{ row['impact_text'] }}</span>
+              {% endif %}
+            </div>
+            <p class="mt-2 text-sm text-gray-900">{{ row['one_liner'] }}</p>
+            <p class="mt-2 text-xs text-gray-500">source: {{ row['source'] }} / card: {{ row['card_id'] or '-' }}</p>
+          </div>
+        </a>
       </li>
       {% endfor %}
     </ul>

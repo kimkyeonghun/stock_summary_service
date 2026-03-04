@@ -28,6 +28,11 @@ def main() -> None:
         action="store_true",
         help="Skip sector-level digest/report generation for this run.",
     )
+    parser.add_argument(
+        "--collect-only",
+        action="store_true",
+        help="Collect and store documents only (skip all summarization agents).",
+    )
     args = parser.parse_args()
 
     settings = load_settings()
@@ -38,6 +43,7 @@ def main() -> None:
         stats = pipeline.run_once(
             stock_codes=stock_codes,
             market=market,
+            include_agent_steps=not args.collect_only,
             include_sector_steps=not args.skip_sector,
         )
     except PipelineBusyError as exc:

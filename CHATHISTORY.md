@@ -77,3 +77,36 @@
 - Open Issues:
 - Next Actions:
 
+---
+
+## [2026-03-04 10:20] Feed 스타일 요약 UI + Item 상세 분석 페이지
+- Context:
+  - 기존 요약 화면이 카드형 피드 UX 요구사항(호재/악재 배지, 상세 분석)과 차이.
+- User Request:
+  - 첨부 이미지와 유사한 방식으로 요약 노출(피드 + 상세 분석) 반영.
+- Decisions:
+  - `item_summaries`에 피드 전용 필드(impact/one-liner/bullets/refs) 저장.
+  - 대시보드에 Agent Feed 블록 추가, 카드 클릭 시 item 상세 페이지 이동.
+- Changes:
+  - files:
+    - `stock_mvp/database.py`
+    - `stock_mvp/storage/item_summary_repo.py`
+    - `stock_mvp/agents/item_summarizer.py`
+    - `stock_mvp/web.py`
+    - `stock_mvp/templates/index.html`
+    - `stock_mvp/templates/stock_detail.html`
+    - `stock_mvp/templates/item_detail.html` (new)
+  - behavior:
+    - 피드 카드에 `호재/중립/악재 + 한줄요약` 표시.
+    - `/\<market>/item/\<item_id>` 상세 분석 화면 추가.
+- Commands Run:
+  - `python -m py_compile ...`
+  - `python scripts/run_agents.py --market kr --scope ticker --entities 005930 --item-lookback-days 30 --item-limit 20 --skip-digest --skip-report`
+  - Flask test client로 `/kr`, `/kr/stock/005930`, `/kr/item/<id>` 200 확인.
+- Validation:
+  - 앱 초기화 정상, 신규 라우트 등록 확인, DB 컬럼 마이그레이션 확인.
+- Open Issues:
+  - 과거 모든 종목 item에 대한 피드 필드 백필 필요 시 추가 실행 필요.
+- Next Actions:
+  1. 피드 문구 품질(한줄/불릿) 추가 개선
+  2. 상세 화면의 quick action 실제 동작 연결
