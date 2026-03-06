@@ -6,10 +6,12 @@ import math
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from typing import Any
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, session, url_for
+from zoneinfo import ZoneInfo
 
 from stock_mvp.backtest import BacktestAsset, BacktestEngine
 from stock_mvp.backtest_presets import get_portfolio_preset, list_portfolio_presets
@@ -29,7 +31,7 @@ from stock_mvp.database import (
     list_stocks_by_market,
     upsert_stocks,
 )
-from stock_mvp.pipeline import CollectionPipeline, PipelineBusyError
+from stock_mvp.pipeline import CollectionPipeline
 from stock_mvp.prices import PriceCollector
 from stock_mvp.sector_mapping import sync_sector_mapping_for_active_stocks
 from stock_mvp.stocks import DEFAULT_STOCKS
@@ -42,6 +44,13 @@ def create_app(settings: Settings | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.config["SETTINGS"] = cfg
     app.secret_key = os.getenv("FLASK_SECRET_KEY", "stock-mvp-dev-session-key")
+
+    @app.template_filter("fmt_dt")
+    def fmt_dt_filter(value: Any, market: str | None = None) -> str:
+        market_norm = str(market or "").strip().upper()
+        if market_norm not in {"KR", "US"}:
+            market_norm = ""
+        return _format_datetime_display(value, market=market_norm or None)
 
     with connect(cfg.db_path) as conn:
         init_db(conn)
@@ -77,6 +86,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     def dashboard(market: str):
         market_norm = _normalize_market_or_404(market)
         _set_session_market(market_norm)
+        feed_stock_param = str(request.args.get("feed_stock") or "").strip().upper()
         with connect(cfg.db_path) as conn:
             market_stocks = list_stocks_by_market(conn, market_norm, active_only=True)
             market_codes = {str(r["code"]) for r in market_stocks}
@@ -133,7 +143,33 @@ def create_app(settings: Settings | None = None) -> Flask:
                         "as_of": str(latest_row["digest_date"] or "") if latest_row else "",
                     }
                 )
-            feed_source_codes = subscribed_stock_codes if subscribed_stock_codes else [str(r["code"]) for r in market_stocks]
+            feed_filter_options: list[dict[str, Any]] = []
+            selected_feed_stock = ""
+            if subscribed_stocks:
+                subscribed_name_by_code = {str(r["code"]): str(r["name"]) for r in subscribed_stocks}
+                if feed_stock_param in subscribed_name_by_code:
+                    selected_feed_stock = feed_stock_param
+                feed_source_codes = [selected_feed_stock] if selected_feed_stock else list(subscribed_stock_codes)
+                feed_filter_options.append(
+                    {
+                        "code": "",
+                        "label": "전체",
+                        "is_active": not selected_feed_stock,
+                        "url": url_for("dashboard", market=market_norm.lower()),
+                    }
+                )
+                for stock in subscribed_stocks:
+                    code = str(stock["code"])
+                    feed_filter_options.append(
+                        {
+                            "code": code,
+                            "label": f"{stock['name']} ({code})",
+                            "is_active": selected_feed_stock == code,
+                            "url": url_for("dashboard", market=market_norm.lower(), feed_stock=code),
+                        }
+                    )
+            else:
+                feed_source_codes = [str(r["code"]) for r in market_stocks]
             feed_items = _latest_item_feed(conn, market=market_norm, stock_codes=feed_source_codes, limit=30)
 
         rows = rows[:20]
@@ -147,6 +183,7 @@ def create_app(settings: Settings | None = None) -> Flask:
             subscribed_sectors=subscribed_sectors,
             feed_items=feed_items,
             feed_has_more=len(feed_items) > 10,
+            feed_filter_options=feed_filter_options,
             has_subscriptions=bool(subscribed_stocks or subscribed_sectors),
         )
 
@@ -312,47 +349,6 @@ def create_app(settings: Settings | None = None) -> Flask:
             related_rows=related_rows,
         )
 
-    def _run_collect_now():
-        codes_raw = request.form.get("stock_codes", "").strip()
-        stock_codes = [x for x in re.split(r"[,\s;]+", codes_raw) if x] or None
-        try:
-            stats = pipeline.run_once(stock_codes=stock_codes, trigger_type="web_manual")
-        except PipelineBusyError as exc:
-            return jsonify({"message": str(exc)}), 409
-        return jsonify(
-            {
-                "run_id": stats.run_id,
-                "stock_count": stats.stock_count,
-                "fetched_docs": stats.fetched_docs,
-                "inserted_docs": stats.inserted_docs,
-                "skipped_docs": stats.skipped_docs,
-                "summaries_written": stats.summaries_written,
-                "item_summaries_written": stats.item_summaries_written,
-                "ticker_digests_written": stats.ticker_digests_written,
-                "ticker_reports_written": stats.ticker_reports_written,
-                "sector_digests_written": stats.sector_digests_written,
-                "sector_reports_written": stats.sector_reports_written,
-                "agent_error_count": stats.agent_error_count,
-                "sector_docs_written": stats.sector_docs_written,
-                "sector_doc_links_written": stats.sector_doc_links_written,
-                "sector_summaries_written": stats.sector_summaries_written,
-                "sector_summary_error_count": stats.sector_summary_error_count,
-                "financial_snapshots_written": stats.financial_snapshots_written,
-                "financial_snapshots_skipped": stats.financial_snapshots_skipped,
-                "financial_error_count": stats.financial_error_count,
-                "error_count": stats.error_count,
-            }
-        )
-
-    @app.route("/collect", methods=["POST"])
-    def collect_now():
-        return _run_collect_now()
-
-    @app.route("/<market>/collect", methods=["POST"])
-    def collect_now_market(market: str):
-        _normalize_market_or_404(market)
-        return _run_collect_now()
-
     @app.route("/backtest")
     def backtest_page_redirect():
         preferred = _get_session_market(default="KR")
@@ -372,23 +368,6 @@ def create_app(settings: Settings | None = None) -> Flask:
     @app.route("/health")
     def health():
         return {"status": "ok", "env": cfg.app_env}
-
-    @app.route("/brief/send", methods=["POST"])
-    def send_brief_now():
-        result = send_morning_brief(cfg)
-        return jsonify({"sent": result.sent, "message": result.message, "item_count": result.item_count})
-
-    @app.route("/universe/refresh", methods=["POST"])
-    def refresh_universe_now():
-        result = universe_refresher.refresh_all(kr_limit=100, us_limit=100)
-        return jsonify(
-            {
-                "kr_requested": result.kr_requested,
-                "kr_active": result.kr_active,
-                "us_requested": result.us_requested,
-                "us_active": result.us_active,
-            }
-        )
 
     @app.route("/ops/runs")
     def ops_runs():
@@ -930,6 +909,10 @@ def _latest_item_feed(conn, *, market: str, stock_codes: list[str], limit: int) 
         bullets = _safe_json_loads(raw.get("detail_bullets_json"), default=[])
         refs = _safe_json_loads(raw.get("related_refs_json"), default=[])
         one_liner = _item_one_liner(raw)
+        source_kind = _classify_source_kind(
+            doc_type=str(raw.get("doc_type") or ""),
+            source=str(raw.get("source") or ""),
+        )
         output.append(
             {
                 "item_id": int(raw["item_id"]),
@@ -944,8 +927,11 @@ def _latest_item_feed(conn, *, market: str, stock_codes: list[str], limit: int) 
                 "impact_text": impact["impact_text"],
                 "impact_css": impact["impact_css"],
                 "show_impact": impact["show_impact"],
+                "source_kind": source_kind,
+                "source_kind_label": _source_kind_label(source_kind),
                 "feed_one_liner": str(raw.get("feed_one_liner") or ""),
                 "one_liner": one_liner,
+                "similar_count": int(raw.get("_similar_count") or 0),
                 "detail_bullets": bullets if isinstance(bullets, list) else [],
                 "related_refs": refs if isinstance(refs, list) else [],
             }
@@ -988,6 +974,11 @@ def _latest_item_summaries(conn, stock_code: str, *, limit: int) -> list[dict[st
         raw["detail_bullets"] = _safe_json_loads(raw.get("detail_bullets_json"), default=[])
         raw["related_refs"] = _safe_json_loads(raw.get("related_refs_json"), default=[])
         raw.update(_impact_view(str(raw.get("impact_label") or "neutral")))
+        raw["source_kind"] = _classify_source_kind(
+            doc_type=str(raw.get("doc_type") or ""),
+            source=str(raw.get("source") or ""),
+        )
+        raw["source_kind_label"] = _source_kind_label(str(raw["source_kind"]))
         raw["one_liner"] = _item_one_liner(raw)
         result.append(raw)
     return result
@@ -1007,6 +998,7 @@ def _item_detail_payload(conn, *, item_id: int) -> dict[str, Any] | None:
           d.stock_code,
           s.name AS stock_name,
           s.market,
+          d.doc_type,
           d.title,
           d.url,
           d.source,
@@ -1026,6 +1018,11 @@ def _item_detail_payload(conn, *, item_id: int) -> dict[str, Any] | None:
     payload["detail_bullets"] = _safe_json_loads(payload.get("detail_bullets_json"), default=[])
     payload["related_refs"] = _safe_json_loads(payload.get("related_refs_json"), default=[])
     payload.update(_impact_view(str(payload.get("impact_label") or "neutral")))
+    payload["source_kind"] = _classify_source_kind(
+        doc_type=str(payload.get("doc_type") or ""),
+        source=str(payload.get("source") or ""),
+    )
+    payload["source_kind_label"] = _source_kind_label(str(payload["source_kind"]))
     payload["one_liner"] = _item_one_liner(payload)
     return payload
 
@@ -1053,35 +1050,58 @@ def _related_documents_for_item(conn, *, stock_code: str, exclude_item_id: int, 
 def _curate_item_summary_rows(rows: list[Any], *, limit: int) -> list[dict[str, Any]]:
     ranked_rows = _rank_rows_for_display(rows, doc_type="mixed")
     output: list[dict[str, Any]] = []
-    seen_url_by_scope: dict[str, set[str]] = {}
-    seen_title_by_scope: dict[str, set[str]] = {}
-    seen_title_norm_by_scope: dict[str, list[tuple[str, set[str]]]] = {}
-    for raw in ranked_rows:
+    seen_url_by_scope: dict[str, dict[str, int]] = {}
+    seen_title_by_scope: dict[str, dict[str, int]] = {}
+    seen_title_norm_by_scope: dict[str, list[tuple[str, set[str], int]]] = {}
+    seen_one_liner_norm_by_scope: dict[str, list[tuple[str, set[str], float, int]]] = {}
+    for ranked in ranked_rows:
+        raw = dict(ranked)
         scope = str(raw.get("stock_code") or "").upper()
         doc_type = str(raw.get("doc_type") or "").strip().lower() or "news"
         if not _is_displayable_doc(raw, doc_type=doc_type):
             continue
-        seen_url = seen_url_by_scope.setdefault(scope, set())
-        seen_title = seen_title_by_scope.setdefault(scope, set())
+        seen_url = seen_url_by_scope.setdefault(scope, {})
+        seen_title = seen_title_by_scope.setdefault(scope, {})
         seen_title_norms = seen_title_norm_by_scope.setdefault(scope, [])
+        seen_one_liner_norms = seen_one_liner_norm_by_scope.setdefault(scope, [])
         url_key = normalize_url(str(raw.get("url") or ""))
         title_key = _title_cluster_key(str(raw.get("title") or ""))
         title_norm, title_tokens = _normalize_title_for_similarity(str(raw.get("title") or ""))
+        one_liner = _item_one_liner(raw)
+        one_liner_norm, one_liner_tokens = _normalize_title_for_similarity(one_liner)
+        one_liner_ts = _event_timestamp(str(raw.get("published_at") or raw.get("collected_at") or ""))
+        dup_idx: int | None = None
         if url_key and url_key in seen_url:
+            dup_idx = seen_url[url_key]
+        if dup_idx is None and title_key and title_key in seen_title:
+            dup_idx = seen_title[title_key]
+        if dup_idx is None and title_norm:
+            dup_idx = _find_similar_title_rep_index(title_norm, title_tokens, seen_title_norms)
+        if dup_idx is None and one_liner_norm:
+            dup_idx = _find_similar_one_liner_rep_index(
+                one_liner_norm,
+                one_liner_tokens,
+                one_liner_ts,
+                seen_one_liner_norms,
+            )
+        if dup_idx is not None:
+            if 0 <= dup_idx < len(output):
+                output[dup_idx]["_similar_count"] = int(output[dup_idx].get("_similar_count") or 0) + 1
             continue
-        if title_key and title_key in seen_title:
-            continue
-        if title_norm and _is_similar_title_seen(title_norm, title_tokens, seen_title_norms):
-            continue
-        if url_key:
-            seen_url.add(url_key)
-        if title_key:
-            seen_title.add(title_key)
-        if title_norm:
-            seen_title_norms.append((title_norm, title_tokens))
-        output.append(raw)
+
         if len(output) >= max(1, limit):
-            break
+            continue
+        raw["_similar_count"] = 0
+        output.append(raw)
+        rep_idx = len(output) - 1
+        if url_key:
+            seen_url[url_key] = rep_idx
+        if title_key:
+            seen_title[title_key] = rep_idx
+        if title_norm:
+            seen_title_norms.append((title_norm, title_tokens, rep_idx))
+        if one_liner_norm:
+            seen_one_liner_norms.append((one_liner_norm, one_liner_tokens, one_liner_ts, rep_idx))
     return output
 
 
@@ -1119,6 +1139,12 @@ def _curate_document_rows(
             seen_title.add(title_key)
         if title_norm:
             seen_title_norms.append((title_norm, title_tokens))
+        source_kind = _classify_source_kind(
+            doc_type=str(raw.get("doc_type") or doc_type or ""),
+            source=str(raw.get("source") or ""),
+        )
+        raw["source_kind"] = source_kind
+        raw["source_kind_label"] = _source_kind_label(source_kind)
         output.append(raw)
         if len(output) >= max(1, limit):
             break
@@ -1245,6 +1271,29 @@ def _event_timestamp(value: str) -> float:
         return 0.0
 
 
+def _classify_source_kind(*, doc_type: str, source: str) -> str:
+    kind = str(doc_type or "").strip().lower()
+    src = str(source or "").strip().lower()
+    if kind in {"news", "report", "filing"}:
+        return kind
+    if src in {"sec_edgar", "dart", "krx_dart", "opendart"}:
+        return "filing"
+    if "edgar" in src or "dart" in src or "filing" in src:
+        return "filing"
+    if "research" in src or "report" in src or "consensus" in src:
+        return "report"
+    return "news"
+
+
+def _source_kind_label(kind: str) -> str:
+    token = str(kind or "").strip().lower()
+    if token == "report":
+        return "리포트"
+    if token == "filing":
+        return "공시"
+    return "뉴스"
+
+
 def _source_rank_prior(*, source: str, doc_type: str) -> float:
     src = str(source or "").strip().lower()
     kind = str(doc_type or "").strip().lower()
@@ -1308,12 +1357,51 @@ def _normalize_title_for_similarity(title: str) -> tuple[str, set[str]]:
     value = re.sub(r"\[[^\]]{1,40}\]", " ", value)
     value = re.sub(r"\([^)]{1,40}\)", " ", value)
     value = re.sub(r"[^0-9a-z가-힣]+", " ", value)
-    stopwords = {"속보", "단독", "종합", "영상", "인터뷰", "기자", "뉴스", "리포트", "증권"}
-    tokens = [tok for tok in value.split() if len(tok) > 1 and tok not in stopwords]
+    stopwords = {
+        "속보",
+        "단독",
+        "종합",
+        "영상",
+        "인터뷰",
+        "기자",
+        "뉴스",
+        "리포트",
+        "증권",
+        "강조했다",
+        "밝혔다",
+        "전했다",
+    }
+    tokens: list[str] = []
+    for token in value.split():
+        canonical = _canonicalize_similarity_token(token)
+        if len(canonical) <= 1 or canonical in stopwords:
+            continue
+        tokens.append(canonical)
     if not tokens:
         return "", set()
     normalized = " ".join(tokens[:20])
     return normalized, set(tokens[:20])
+
+
+def _canonicalize_similarity_token(token: str) -> str:
+    t = compact_text(str(token or "")).lower()
+    if not t:
+        return ""
+    if len(t) > 3 and t.startswith("한국"):
+        t = t[2:]
+    if "주주총회" in t or "주총" in t:
+        return "주총"
+    if "거버넌스포럼" in t:
+        return "거버넌스포럼"
+
+    # Strip common Korean postpositions/endings for better overlap matching.
+    while len(t) > 2 and t[-1] in {"이", "가", "은", "는", "을", "를", "의", "에", "도", "만", "로", "와", "과"}:
+        t = t[:-1]
+    for suffix in ("에게", "에서", "으로", "라고", "이고", "이며", "하다", "했다", "한다", "됐다", "되었다"):
+        if len(t) > len(suffix) + 1 and t.endswith(suffix):
+            t = t[: -len(suffix)]
+            break
+    return t
 
 
 def _is_similar_title_seen(
@@ -1339,6 +1427,139 @@ def _is_similar_title_seen(
         if large > 0 and overlap >= 4 and (overlap / large) >= 0.67:
             return True
     return False
+
+
+def _find_similar_title_rep_index(
+    current_title: str,
+    current_tokens: set[str],
+    seen_titles: list[tuple[str, set[str], int]],
+) -> int | None:
+    if not current_title:
+        return None
+    for seen_title, seen_tokens, rep_idx in seen_titles:
+        if current_title == seen_title:
+            return rep_idx
+        if len(current_title) >= 12 and len(seen_title) >= 12:
+            if current_title in seen_title or seen_title in current_title:
+                return rep_idx
+        if not current_tokens or not seen_tokens:
+            continue
+        overlap = len(current_tokens & seen_tokens)
+        small = min(len(current_tokens), len(seen_tokens))
+        large = max(len(current_tokens), len(seen_tokens))
+        if small > 0 and overlap >= 3 and (overlap / small) >= 0.8:
+            return rep_idx
+        if large > 0 and overlap >= 4 and (overlap / large) >= 0.67:
+            return rep_idx
+    return None
+
+
+def _is_similar_one_liner_seen(
+    current_text: str,
+    current_tokens: set[str],
+    current_ts: float,
+    seen_texts: list[tuple[str, set[str], float]],
+) -> bool:
+    if not current_text:
+        return False
+    for seen_text, seen_tokens, seen_ts in seen_texts:
+        if current_text == seen_text:
+            return True
+        if len(current_text) >= 16 and len(seen_text) >= 16:
+            if current_text in seen_text or seen_text in current_text:
+                return True
+        if not current_tokens or not seen_tokens:
+            continue
+        overlap = len(current_tokens & seen_tokens)
+        small = min(len(current_tokens), len(seen_tokens))
+        large = max(len(current_tokens), len(seen_tokens))
+        if small <= 0 or large <= 0:
+            continue
+
+        # Strict rule for very close paraphrases.
+        if overlap >= 4 and (overlap / small) >= 0.55:
+            return True
+
+        # Lenient rule for same-event coverage close in time.
+        time_gap = abs(float(current_ts or 0.0) - float(seen_ts or 0.0))
+        if time_gap <= 7 * 24 * 3600:
+            if overlap >= 4 and ((overlap / small) >= 0.32 or (overlap / large) >= 0.28):
+                return True
+            ratio = _sequence_similarity(current_text, seen_text)
+            if ratio >= 0.62:
+                return True
+            if ratio >= 0.55 and _shared_event_keyword_count(current_text, seen_text) >= 1:
+                return True
+    return False
+
+
+def _find_similar_one_liner_rep_index(
+    current_text: str,
+    current_tokens: set[str],
+    current_ts: float,
+    seen_texts: list[tuple[str, set[str], float, int]],
+) -> int | None:
+    if not current_text:
+        return None
+    for seen_text, seen_tokens, seen_ts, rep_idx in seen_texts:
+        if current_text == seen_text:
+            return rep_idx
+        if len(current_text) >= 16 and len(seen_text) >= 16:
+            if current_text in seen_text or seen_text in current_text:
+                return rep_idx
+        if not current_tokens or not seen_tokens:
+            continue
+        overlap = len(current_tokens & seen_tokens)
+        small = min(len(current_tokens), len(seen_tokens))
+        large = max(len(current_tokens), len(seen_tokens))
+        if small <= 0 or large <= 0:
+            continue
+        if overlap >= 4 and (overlap / small) >= 0.55:
+            return rep_idx
+        time_gap = abs(float(current_ts or 0.0) - float(seen_ts or 0.0))
+        if time_gap <= 7 * 24 * 3600:
+            if overlap >= 4 and ((overlap / small) >= 0.32 or (overlap / large) >= 0.28):
+                return rep_idx
+            ratio = _sequence_similarity(current_text, seen_text)
+            if ratio >= 0.62:
+                return rep_idx
+            if ratio >= 0.55 and _shared_event_keyword_count(current_text, seen_text) >= 1:
+                return rep_idx
+    return None
+
+
+def _sequence_similarity(a: str, b: str) -> float:
+    left = compact_text(str(a or ""))
+    right = compact_text(str(b or ""))
+    if not left or not right:
+        return 0.0
+    return float(SequenceMatcher(None, left, right).ratio())
+
+
+def _shared_event_keyword_count(a: str, b: str) -> int:
+    keywords = (
+        "주주총회",
+        "주총",
+        "경영권",
+        "지배구조",
+        "거버넌스",
+        "실적",
+        "가이던스",
+        "수주",
+        "규제",
+        "소송",
+        "제재",
+        "합병",
+        "인수",
+        "공급망",
+        "배당",
+        "증자",
+    )
+    left = compact_text(str(a or ""))
+    right = compact_text(str(b or ""))
+    if not left or not right:
+        return 0
+    return sum(1 for key in keywords if key in left and key in right)
 
 
 def _impact_view(impact_label: str) -> dict[str, str]:
@@ -1589,6 +1810,59 @@ def _group_sources_by_line(rows: list) -> dict[int, list[dict[str, Any]]]:
             }
         )
     return grouped
+
+
+def _format_datetime_display(value: Any, *, market: str | None = None) -> str:
+    text = compact_text(str(value or ""))
+    if not text:
+        return "-"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return text
+
+    candidate = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(candidate)
+    except ValueError:
+        return text
+
+    if dt.tzinfo is None:
+        return dt.strftime("%Y-%m-%d %H:%M")
+
+    market_norm = str(market or "").strip().upper()
+    if market_norm == "KR":
+        dt_local = _to_market_tz(dt, market="KR")
+        return f"{dt_local.strftime('%Y-%m-%d %H:%M')} KST"
+    if market_norm == "US":
+        dt_local = _to_market_tz(dt, market="US")
+        return f"{dt_local.strftime('%Y-%m-%d %H:%M')} ET"
+
+    return f"{dt.strftime('%Y-%m-%d %H:%M')} {_offset_label(dt)}".strip()
+
+
+def _to_market_tz(dt: datetime, *, market: str) -> datetime:
+    market_norm = market.strip().upper()
+    if market_norm == "KR":
+        try:
+            return dt.astimezone(ZoneInfo("Asia/Seoul"))
+        except Exception:
+            return dt.astimezone(timezone(timedelta(hours=9)))
+    if market_norm == "US":
+        try:
+            return dt.astimezone(ZoneInfo("America/New_York"))
+        except Exception:
+            return dt
+    return dt
+
+
+def _offset_label(dt: datetime) -> str:
+    offset = dt.utcoffset()
+    if offset is None:
+        return ""
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"UTC{sign}{hours:02d}:{minutes:02d}"
 
 
 def _build_financial_view(raw: dict[str, Any]) -> dict[str, Any]:

@@ -85,7 +85,7 @@
           {% endif %}
         </article>
       </div>
-      <p class="mt-4 text-xs text-gray-500">as_of: {{ digest['digest_date'] }} / market: {{ digest['market']|upper }}</p>
+      <p class="mt-4 text-xs text-gray-500">as_of: {{ digest['digest_date']|fmt_dt(current_market) }} / market: {{ digest['market']|upper }}</p>
     {% else %}
       <p class="mt-4 text-sm text-gray-500">Daily digest가 아직 생성되지 않았습니다.</p>
     {% endif %}
@@ -112,7 +112,7 @@
             <span class="rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-500">{{ sector['sector_code'] }}</span>
           </div>
           <p class="mt-2 text-sm text-gray-500">{{ sector['line1'] or '섹터 요약이 아직 없습니다.' }}</p>
-          <p class="mt-1 text-xs text-gray-500">{{ sector['as_of'] or '-' }}</p>
+          <p class="mt-1 text-xs text-gray-500">{{ sector['as_of']|fmt_dt(current_market) }}</p>
         </article>
         {% endfor %}
       </div>
@@ -164,13 +164,33 @@
         <a href="{{ url_for('item_detail', market=current_market.lower(), item_id=row['item_id']) }}" class="block">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
-              <p class="text-sm font-medium text-gray-900">{{ row['published_at'] or '-' }}</p>
+              <p class="text-sm font-medium text-gray-900">{{ row['published_at']|fmt_dt(current_market) }}</p>
               {% if row['show_impact'] %}
               <span class="text-sm {{ row['impact_css'] }}">{{ row['impact_emoji'] }} {{ row['impact_text'] }}</span>
               {% endif %}
             </div>
             <p class="mt-2 text-sm text-gray-900">{{ row['one_liner'] }}</p>
-            <p class="mt-2 text-xs text-gray-500">source: {{ row['source'] }} / card: {{ row['card_id'] or '-' }}</p>
+            <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+              <span class="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5" title="{{ row['source'] }}">
+                {% if row['source_kind'] == 'report' %}
+                <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M14 3v6h6M9 13h6M9 17h6"/>
+                </svg>
+                {% elif row['source_kind'] == 'filing' %}
+                <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M3 21h18M5 21V8l7-4 7 4v13M9 12h6M9 16h6"/>
+                </svg>
+                {% else %}
+                <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19 4H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h4l3 3 3-3h4a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M7 9h10M7 13h6"/>
+                </svg>
+                {% endif %}
+                <span>{{ row['source_kind_label'] }}</span>
+              </span>
+              <span>card: {{ row['card_id'] or '-' }}</span>
+            </div>
           </div>
         </a>
       </li>
@@ -195,7 +215,15 @@
         {% for row in news_rows %}
         <li class="news-item {% if loop.index > doc_initial_limit %}hidden extra-news{% endif %} rounded-xl border border-gray-200 p-3">
           <a href="{{ row['url'] }}" target="_blank" rel="noreferrer" class="text-sm font-medium {{ accent_link_class }}">{{ row['title'] }}</a>
-          <p class="mt-1 text-xs text-gray-500">{{ row['source'] }} / {{ row['published_at'] or '-' }}</p>
+          <p class="mt-1 inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-gray-500" title="{{ row['source'] }}">
+            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19 4H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h4l3 3 3-3h4a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" d="M7 9h10M7 13h6"/>
+            </svg>
+            <span>뉴스</span>
+            <span>·</span>
+            <span>{{ row['published_at']|fmt_dt(current_market) }}</span>
+          </p>
           {% if doc_sort == 'relevance' %}
           <p class="mt-1 text-xs text-gray-500">연관도 {{ '%.2f'|format(row['relevance_score'] or 0) }}</p>
           {% endif %}
@@ -220,7 +248,15 @@
         {% for row in report_rows %}
         <li class="report-item {% if loop.index > doc_initial_limit %}hidden extra-report{% endif %} rounded-xl border border-gray-200 p-3">
           <a href="{{ row['url'] }}" target="_blank" rel="noreferrer" class="text-sm font-medium {{ accent_link_class }}">{{ row['title'] }}</a>
-          <p class="mt-1 text-xs text-gray-500">{{ row['source'] }} / {{ row['published_at'] or '-' }}</p>
+          <p class="mt-1 inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-gray-500" title="{{ row['source'] }}">
+            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" d="M14 3v6h6M9 13h6M9 17h6"/>
+            </svg>
+            <span>리포트</span>
+            <span>·</span>
+            <span>{{ row['published_at']|fmt_dt(current_market) }}</span>
+          </p>
           {% if doc_sort == 'relevance' %}
           <p class="mt-1 text-xs text-gray-500">연관도 {{ '%.2f'|format(row['relevance_score'] or 0) }}</p>
           {% endif %}
