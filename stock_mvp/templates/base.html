@@ -56,6 +56,12 @@
                 Watchlist
               </a>
               <a
+                href="{{ nav_links.sectors }}"
+                class="rounded-lg px-3 py-2 {% if active_page == 'sectors' %}{{ active_bg_class }} {{ active_text_class }}{% else %}text-gray-500 {{ hover_text_class }}{% endif %}"
+              >
+                Sectors
+              </a>
+              <a
                 href="{{ nav_links.backtest }}"
                 class="rounded-lg px-3 py-2 {% if active_page == 'backtest' %}{{ active_bg_class }} {{ active_text_class }}{% else %}text-gray-500 {{ hover_text_class }}{% endif %}"
               >
@@ -71,8 +77,11 @@
       {% block content %}{% endblock %}
     </main>
 
+    <div id="toast-root" class="pointer-events-none fixed right-4 top-4 z-50 flex w-full max-w-sm flex-col gap-2"></div>
+
     <div class="hidden bg-indigo-50 text-indigo-600 hover:text-indigo-500 bg-indigo-600 hover:bg-indigo-500 border-indigo-500 hover:border-indigo-500 bg-emerald-50 text-emerald-600 hover:text-emerald-500 bg-emerald-600 hover:bg-emerald-500 border-emerald-500 hover:border-emerald-500"></div>
 
+    <script src="{{ url_for('static', filename='js/ajax_ui.js') }}"></script>
     {% block scripts %}{% endblock %}
   </body>
 </html>

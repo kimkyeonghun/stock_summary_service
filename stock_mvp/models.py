@@ -32,6 +32,17 @@ class CollectedDocument:
 
 
 @dataclass(frozen=True)
+class SectorCollectedDocument:
+    sector_name: str
+    source: str
+    doc_type: str
+    title: str
+    url: str
+    published_at: datetime | None
+    body: str
+
+
+@dataclass(frozen=True)
 class SummaryLine:
     text: str
     source_doc_ids: list[int]

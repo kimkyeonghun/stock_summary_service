@@ -10,16 +10,13 @@ from stock_mvp.storage import digest_repo, evidence_repo
 from stock_mvp.utils import compact_text
 
 
-LINE_LABELS = [
-    "[Core Fact]",
-    "[Core Fact]",
-    "[Earnings/Numbers]",
-    "[Demand/Sector]",
-    "[Interpretation]",
-    "[Interpretation]",
-    "[Risk]",
-    "[Bottom line]",
-]
+MIN_SUMMARY_LINES = 5
+SECTION_LABELS = {
+    "core": "[핵심요약]",
+    "evidence": "[근거]",
+    "risk": "[리스크]",
+}
+DIGEST_PROMPT_VERSION = "m4_digest_v1"
 
 
 class EntityDigestAgent:
@@ -41,8 +38,14 @@ class EntityDigestAgent:
         start_date = date_days_ago(date_text, max(1, lookback_days))
         created = 0
         errors = 0
+        total = len(entity_ids)
+        if total > 0:
+            print(
+                "[PROGRESS] entity_digest start "
+                f"entity_type={entity_type} market={market.upper()} total={total}"
+            )
 
-        for entity_id in entity_ids:
+        for idx, entity_id in enumerate(entity_ids, start=1):
             try:
                 payload = self._build_one(
                     conn,
@@ -62,6 +65,7 @@ class EntityDigestAgent:
                     change_3=payload["change_3"],
                     open_questions=payload["open_questions"],
                     refs=payload["refs"],
+                    prompt_version=DIGEST_PROMPT_VERSION,
                 )
                 created += 1
             except Exception as exc:
@@ -69,6 +73,11 @@ class EntityDigestAgent:
                 print(
                     f"[WARN] entity_digest failed: entity_type={entity_type} "
                     f"entity_id={entity_id} market={market} error={exc}"
+                )
+            if idx == 1 or idx == total or idx % 20 == 0:
+                print(
+                    "[PROGRESS] entity_digest "
+                    f"{idx}/{total} created={created} errors={errors}"
                 )
 
         conn.commit()
@@ -121,7 +130,7 @@ class EntityDigestAgent:
                 "refs": refs,
             }
 
-        summary_lines = self._build_8_lines(cards, aliases)
+        summary_lines = self._build_summary_lines(cards, aliases)
         change_3 = self._build_change_3(cards, aliases, previous)
         open_q = self._build_open_questions(cards, aliases)
         return {
@@ -159,7 +168,6 @@ class EntityDigestAgent:
                 end_date=end_date,
                 limit=200,
             )
-
         return [c for c in cards if str(c.get("source_type") or "") in {"news", "research"}]
 
     @staticmethod
@@ -209,7 +217,7 @@ class EntityDigestAgent:
             )
             return None
 
-        summary_8line = self._compose_8line_from_payload(parsed["summary_lines"])
+        summary_8line = self._compose_variable_summary_from_payload(parsed["summary_lines"])
         change_3 = self._compose_change_from_payload(parsed["change_lines"])
         open_questions = self._compose_questions_from_payload(parsed["open_questions"])
         return {
@@ -218,17 +226,19 @@ class EntityDigestAgent:
             "open_questions": open_questions,
         }
 
-    def _compose_8line_from_payload(self, lines: list[dict[str, Any]]) -> str:
+    def _compose_variable_summary_from_payload(self, lines: list[dict[str, Any]]) -> str:
         out: list[str] = []
-        for idx, item in enumerate(lines[:8]):
-            text = compact_text(str(item.get("text") or "")) or "No material update."
+        for idx, item in enumerate(lines):
+            text = compact_text(str(item.get("text") or "")) or "유의미한 업데이트가 없습니다."
             cards = [compact_text(str(x)) for x in list(item.get("cards") or []) if compact_text(str(x))]
+            section = _normalize_section_key(item.get("section"))
+            label = SECTION_LABELS.get(section, SECTION_LABELS["core"])
             card_text = ",".join(cards[:3]) if cards else "-"
-            out.append(f"{idx + 1}) {LINE_LABELS[idx]} {text} (cards: {card_text})")
-        while len(out) < 8:
-            idx = len(out)
-            out.append(f"{idx + 1}) {LINE_LABELS[idx]} No material update. (cards: -)")
-        return "\n".join(out[:8])
+            out.append(f"{idx + 1}) {label} {text} (cards: {card_text})")
+        if len(out) < MIN_SUMMARY_LINES:
+            for idx in range(len(out), MIN_SUMMARY_LINES):
+                out.append(f"{idx + 1}) {SECTION_LABELS['core']} 유의미한 업데이트가 없습니다. (cards: -)")
+        return "\n".join(out)
 
     @staticmethod
     def _compose_change_from_payload(change_lines: list[dict[str, Any]]) -> str:
@@ -257,20 +267,17 @@ class EntityDigestAgent:
             out.append(f"Q{idx}) {text} (cards: {card_text})")
         while len(out) < 2:
             idx = len(out) + 1
-            out.append(f"Q{idx}) Additional evidence is needed (cards: -)")
+            out.append(f"Q{idx}) 추가 근거 확인이 필요합니다. (cards: -)")
         return "\n".join(out[:2])
 
-    def _build_8_lines(self, cards: list[dict[str, Any]], aliases: dict[str, str]) -> list[str]:
+    def _build_summary_lines(self, cards: list[dict[str, Any]], aliases: dict[str, str]) -> list[str]:
         if not cards:
             return [
-                "1) [Core Fact] No material fact available (cards: -)",
-                "2) [Core Fact] No material fact available (cards: -)",
-                "3) [Earnings/Numbers] No material number update (cards: -)",
-                "4) [Demand/Sector] No material sector demand update (cards: -)",
-                "5) [Interpretation] Limited evidence may imply a neutral stance (cards: -)",
-                "6) [Interpretation] Additional data could change interpretation (cards: -)",
-                "7) [Risk] No explicit risk statement in source. (cards: -)",
-                "8) [Bottom line] Data remains insufficient for a stronger conclusion (cards: -)",
+                "1) [핵심요약] 확인 가능한 핵심 사실이 아직 충분하지 않습니다. (cards: -)",
+                "2) [핵심요약] 현재 데이터만으로 뚜렷한 추세를 단정하기 어렵습니다. (cards: -)",
+                "3) [근거] 수치 또는 실적 관련 업데이트가 제한적입니다. (cards: -)",
+                "4) [근거] 수요·섹터 방향을 확정할 신호가 부족합니다. (cards: -)",
+                "5) [리스크] 명시적 리스크 언급이 없습니다. (cards: -)",
             ]
 
         def fact(idx: int, fallback: str) -> tuple[str, str]:
@@ -281,24 +288,18 @@ class EntityDigestAgent:
                 return text, aliases[card["card_id"]]
             return fallback, "-"
 
-        f1, c1 = fact(0, "No recent core fact update")
-        f2, c2 = fact(1, "No additional core fact update")
+        f1, c1 = fact(0, "최근 핵심 사실 업데이트가 제한적입니다.")
+        f2, c2 = fact(1, "추가 핵심 사실 업데이트가 제한적입니다.")
         num_fact, c3 = self._pick_number_fact(cards, aliases)
         demand_fact, c4 = self._pick_topic_fact(cards, aliases, topic="demand")
-        interp1, c5 = self._pick_interpretation(cards, aliases, idx=0)
-        interp2, c6 = self._pick_interpretation(cards, aliases, idx=1)
-        risk, c7 = self._pick_risk(cards, aliases)
-        bottom = "Facts are constructive, but interpretation should remain provisional."
+        risk, c5 = self._pick_risk(cards, aliases)
 
         return [
-            f"1) [Core Fact] {f1} (cards: {c1})",
-            f"2) [Core Fact] {f2} (cards: {c2})",
-            f"3) [Earnings/Numbers] {num_fact} (cards: {c3})",
-            f"4) [Demand/Sector] {demand_fact} (cards: {c4})",
-            f"5) [Interpretation] {interp1} (cards: {c5})",
-            f"6) [Interpretation] {interp2} (cards: {c6})",
-            f"7) [Risk] {risk} (cards: {c7})",
-            f"8) [Bottom line] {bottom} (cards: {c1},{c2})",
+            f"1) [핵심요약] {f1} (cards: {c1})",
+            f"2) [핵심요약] {f2} (cards: {c2})",
+            f"3) [근거] {num_fact} (cards: {c3})",
+            f"4) [근거] {demand_fact} (cards: {c4})",
+            f"5) [리스크] {risk} (cards: {c5})",
         ]
 
     def _pick_number_fact(self, cards: list[dict[str, Any]], aliases: dict[str, str]) -> tuple[str, str]:
@@ -306,7 +307,7 @@ class EntityDigestAgent:
             for fact in card.get("facts") or []:
                 if any(ch.isdigit() for ch in str(fact)):
                     return compact_text(str(fact)), aliases[card["card_id"]]
-        return "Numeric update is currently limited", "-"
+        return "숫자 기반 업데이트가 현재 제한적입니다.", "-"
 
     def _pick_topic_fact(
         self,
@@ -319,21 +320,24 @@ class EntityDigestAgent:
             topics = [str(x) for x in card.get("topics") or []]
             if topic in topics or (topic == "demand" and "supply_chain" in topics):
                 facts = list(card.get("facts") or [])
-                return compact_text(str(facts[0] if facts else card.get("fact_headline") or "")), aliases[card["card_id"]]
-        return "No clear demand or sector signal is confirmed", "-"
+                text = compact_text(str(facts[0] if facts else card.get("fact_headline") or ""))
+                return text or "수요/섹터 관련 신호가 제한적입니다.", aliases[card["card_id"]]
+        return "명확한 수요/섹터 신호가 확인되지 않았습니다.", "-"
 
     def _pick_interpretation(self, cards: list[dict[str, Any]], aliases: dict[str, str], *, idx: int) -> tuple[str, str]:
         if idx < len(cards):
             card = cards[idx]
-            return compact_text(str(card.get("interpretation") or "Interpretation is limited by available evidence.")), aliases[card["card_id"]]
-        return "Interpretation remains weak due to limited evidence", "-"
+            text = compact_text(str(card.get("interpretation") or ""))
+            if text:
+                return text, aliases[card["card_id"]]
+        return "해석 가능한 근거가 아직 제한적입니다.", "-"
 
     def _pick_risk(self, cards: list[dict[str, Any]], aliases: dict[str, str]) -> tuple[str, str]:
         for card in cards:
             risk = compact_text(str(card.get("risk_note") or ""))
             if risk:
                 return risk, aliases[card["card_id"]]
-        return "No explicit risk statement in source.", "-"
+        return "명시적 리스크 언급이 없습니다.", "-"
 
     def _build_change_3(
         self,
@@ -371,13 +375,13 @@ class EntityDigestAgent:
 
     def _build_open_questions(self, cards: list[dict[str, Any]], aliases: dict[str, str]) -> str:
         if not cards:
-            return "Q1) Additional evidence is needed\nQ2) Additional evidence is needed"
+            return "Q1) 추가 근거 확인이 필요합니다.\nQ2) 추가 근거 확인이 필요합니다."
         top = cards[0]
         first_alias = aliases.get(top["card_id"], "-")
         topics = [str(x) for x in top.get("topics") or []]
-        topic = topics[0] if topics else "core topic"
-        q1 = f"Q1) Can the {topic} signal be confirmed by the next disclosure or research update? (cards: {first_alias})"
-        q2 = f"Q2) How material is the current risk factor to the next period outcome? (cards: {first_alias})"
+        topic = topics[0] if topics else "핵심 토픽"
+        q1 = f"Q1) 다음 공시/리포트에서 {topic} 신호가 재확인될 수 있을까요? (cards: {first_alias})"
+        q2 = f"Q2) 현재 리스크 요인이 다음 구간 성과에 얼마나 유의미할까요? (cards: {first_alias})"
         return f"{q1}\n{q2}"
 
 
@@ -385,8 +389,10 @@ def _digest_system_prompt() -> str:
     return (
         "You are a market digest writer for beginner investors. Return JSON only. "
         "Required keys: summary_lines, change_3, open_questions. "
-        "summary_lines must be exactly 8 items. "
-        "Each summary line item: {text, cards}. cards must contain aliases like C1,C2. "
+        "summary_lines must contain at least 5 items (no fixed max). "
+        "Each summary line item: {section,text,cards}. section must be one of core,evidence,risk. "
+        "Required section coverage in summary_lines: core>=2, evidence>=2, risk>=1. "
+        "cards must contain aliases like C1,C2. "
         "change_3 should be up to 3 items with {sign,text,cards}. sign is '+' or '-'. "
         "open_questions should be exactly 2 items with {text,cards}. "
         "No investment recommendation language."
@@ -429,7 +435,11 @@ def _digest_user_prompt(
         "entity_id": entity_id,
         "market": market,
         "period": {"start_date": start_date, "end_date": end_date},
-        "line_labels": LINE_LABELS,
+        "summary_section_schema": {
+            "core": "핵심요약",
+            "evidence": "근거",
+            "risk": "리스크",
+        },
         "cards": card_rows,
         "previous_digest": previous_payload,
     }
@@ -450,11 +460,19 @@ def _parse_digest_payload(payload: dict[str, Any], *, alias_values: set[str]) ->
         text = compact_text(str(item.get("text") or ""))
         if not text:
             continue
+        raw_section = item.get("section")
+        if compact_text(str(raw_section or "")):
+            section = _normalize_section_key(raw_section)
+        else:
+            section = _infer_section_by_index(len(summary_lines))
         cards = _normalize_aliases(item.get("cards"), alias_values=alias_values)
-        summary_lines.append({"text": text[:220], "cards": cards})
-        if len(summary_lines) >= 8:
-            break
-    if len(summary_lines) < 8:
+        summary_lines.append({"section": section, "text": text[:220], "cards": cards})
+    if len(summary_lines) < MIN_SUMMARY_LINES:
+        return None
+    core_count = sum(1 for line in summary_lines if line["section"] == "core")
+    evidence_count = sum(1 for line in summary_lines if line["section"] == "evidence")
+    risk_count = sum(1 for line in summary_lines if line["section"] == "risk")
+    if core_count < 2 or evidence_count < 2 or risk_count < 1:
         return None
 
     change_lines: list[dict[str, Any]] = []
@@ -494,10 +512,29 @@ def _parse_digest_payload(payload: dict[str, Any], *, alias_values: set[str]) ->
         return None
 
     return {
-        "summary_lines": summary_lines[:8],
+        "summary_lines": summary_lines,
         "change_lines": change_lines[:3],
         "open_questions": open_questions[:2],
     }
+
+
+def _normalize_section_key(value: Any) -> str:
+    key = compact_text(str(value or "")).lower()
+    if key in {"core", "summary", "핵심", "핵심요약"}:
+        return "core"
+    if key in {"evidence", "fact", "근거", "팩트"}:
+        return "evidence"
+    if key in {"risk", "리스크", "위험"}:
+        return "risk"
+    return "core"
+
+
+def _infer_section_by_index(idx: int) -> str:
+    if idx < 2:
+        return "core"
+    if idx < 4:
+        return "evidence"
+    return "risk"
 
 
 def _normalize_aliases(raw: Any, *, alias_values: set[str]) -> list[str]:

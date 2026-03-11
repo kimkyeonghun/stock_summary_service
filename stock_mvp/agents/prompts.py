@@ -8,8 +8,9 @@ RISK must always be present.
 """
 
 DIGEST_STYLE_GUIDE = """
-Produce fixed 8-line digest format.
-Each line must reference evidence aliases (C1, C2...).
+Produce variable-length digest format (minimum 5 lines, no fixed max).
+Use fixed section intent: core summary, evidence, risk, checkpoints.
+Each summary line must reference evidence aliases (C1, C2...).
 Avoid investment recommendation language.
 """
 
@@ -18,4 +19,3 @@ Write concise analyst-style report with:
 Executive Summary / Thesis / Bear Case / Key Evidence / What Changed / What to Watch / Uncertainties.
 Do not output buy/sell recommendations.
 """
-

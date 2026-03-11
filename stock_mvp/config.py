@@ -33,6 +33,7 @@ class Settings:
     reports_per_stock: int
     naver_news_per_stock: int
     naver_finance_reports_per_stock: int
+    naver_industry_reports_per_run: int
     sec_reports_per_stock: int
     summary_lookback_days: int
     collect_store_all_docs: bool
@@ -102,6 +103,7 @@ def load_settings() -> Settings:
         naver_finance_reports_per_stock=int(
             os.getenv("NAVER_FINANCE_REPORTS_PER_STOCK", os.getenv("REPORTS_PER_STOCK", "10"))
         ),
+        naver_industry_reports_per_run=int(os.getenv("NAVER_INDUSTRY_REPORTS_PER_RUN", "60")),
         sec_reports_per_stock=int(os.getenv("SEC_REPORTS_PER_STOCK", os.getenv("REPORTS_PER_STOCK", "10"))),
         summary_lookback_days=int(os.getenv("SUMMARY_LOOKBACK_DAYS", "7")),
         collect_store_all_docs=_parse_bool(os.getenv("COLLECT_STORE_ALL_DOCS", "true"), default=True),

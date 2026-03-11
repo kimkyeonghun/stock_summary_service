@@ -1,6 +1,6 @@
 ﻿{% extends "base.html" %}
 
-{% block title %}{{ current_market }} Dashboard - BriefAlpha{% endblock %}
+{% block title %}{{ current_market }} 대시보드 - BriefAlpha{% endblock %}
 
 {% block content %}
 {% set is_kr = current_market == 'KR' %}
@@ -13,7 +13,7 @@
   <div class="rounded-2xl bg-white p-6 shadow-sm">
     <div>
       <div>
-        <h1 class="text-2xl font-semibold text-gray-900">{{ current_market }} Dashboard</h1>
+        <h1 class="text-2xl font-semibold text-gray-900">{{ current_market }} 대시보드</h1>
         <p class="mt-2 text-sm text-gray-500">구독한 종목/섹터를 중심으로 최신 요약을 확인합니다.</p>
       </div>
     </div>
@@ -21,38 +21,46 @@
 
   <div class="grid gap-4 md:grid-cols-3">
     <article class="rounded-2xl bg-white p-6 shadow-sm">
-      <p class="text-sm text-gray-500">Subscribed Tickers</p>
+      <p class="text-sm text-gray-500">구독 종목</p>
       <p class="mt-2 text-2xl font-semibold text-gray-900">{{ subscribed_stocks|length }}</p>
     </article>
     <article class="rounded-2xl bg-white p-6 shadow-sm">
-      <p class="text-sm text-gray-500">Subscribed Sectors</p>
+      <p class="text-sm text-gray-500">구독 섹터</p>
       <p class="mt-2 text-2xl font-semibold text-gray-900">{{ subscribed_sectors|length }}</p>
     </article>
     <article class="rounded-2xl bg-white p-6 shadow-sm">
-      <p class="text-sm text-gray-500">Recent Items</p>
+      <p class="text-sm text-gray-500">최근 요약</p>
       <p class="mt-2 text-2xl font-semibold text-gray-900">{{ rows|length }}</p>
     </article>
   </div>
 
-  <section class="rounded-2xl bg-white p-6 shadow-sm">
+  <section
+    class="rounded-2xl bg-white p-6 shadow-sm"
+    data-ajax-feed-root
+    data-market="{{ current_market.lower() }}"
+    data-selected-feed-stock="{{ selected_feed_stock or '' }}"
+    data-feed-limit="10"
+    data-chip-active-class="{% if is_kr %}border-indigo-600 bg-indigo-600 text-white{% else %}border-emerald-600 bg-emerald-600 text-white{% endif %}"
+    data-chip-inactive-class="border-gray-200 bg-white text-gray-900 {{ accent_hover_text_class }}"
+  >
     <div class="flex items-center justify-between">
       <h2 class="text-lg font-semibold text-gray-900">최근 요약 피드</h2>
-      <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-500">{{ feed_items|length }}</span>
+      <span data-role="feed-count" class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-500">{{ feed_items|length }}</span>
     </div>
-    {% if feed_filter_options %}
-    <div class="mt-3 flex flex-wrap gap-2">
+    <div data-role="feed-filters" class="mt-3 flex flex-wrap gap-2">
       {% for opt in feed_filter_options %}
       <a
         href="{{ opt['url'] }}"
+        data-ajax-feed-filter
+        data-feed-stock-code="{{ opt['code'] }}"
         class="rounded-full border px-3 py-1 text-xs font-medium {% if opt['is_active'] %}{% if is_kr %}border-indigo-600 bg-indigo-600 text-white{% else %}border-emerald-600 bg-emerald-600 text-white{% endif %}{% else %}border-gray-200 bg-white text-gray-900 {{ accent_hover_text_class }}{% endif %}"
       >{{ opt['label'] }}</a>
       {% endfor %}
     </div>
-    {% endif %}
     {% if feed_items %}
-    <ul class="mt-4 space-y-3">
+    <ul data-role="feed-list" class="mt-4 space-y-3">
       {% for item in feed_items %}
-      <li class="feed-item {% if loop.index > 10 %}hidden extra-feed{% endif %} rounded-xl border border-gray-200 p-4">
+      <li class="feed-item rounded-xl border border-gray-200 p-4">
         <a href="{{ url_for('item_detail', market=current_market.lower(), item_id=item['item_id']) }}" class="block">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
@@ -64,7 +72,7 @@
             </div>
             <p class="mt-2 text-sm text-gray-900">{{ item['one_liner'] }}</p>
             <div class="mt-2 flex flex-wrap items-center gap-2">
-              <span class="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-gray-500" title="{{ item['source'] }}">
+              <span class="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-gray-500">
                 {% if item['source_kind'] == 'report' %}
                 <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
@@ -88,29 +96,46 @@
             </div>
           </div>
         </a>
+        <div class="mt-2">
+          <button
+            type="button"
+            data-ajax-basket-add
+            data-market="{{ current_market.lower() }}"
+            data-stock-code="{{ item['stock_code'] }}"
+            class="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs font-medium text-gray-900 {{ accent_hover_text_class }}"
+          >
+            백테스트 담기
+          </button>
+        </div>
       </li>
       {% endfor %}
     </ul>
     {% if feed_has_more %}
-    <button id="load-more-feed" type="button" class="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {{ accent_hover_text_class }}">더보기</button>
+    <button
+      id="load-more-feed"
+      data-role="feed-load-more"
+      data-next-offset="{{ feed_items|length }}"
+      type="button"
+      class="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {{ accent_hover_text_class }}"
+    >더보기</button>
     {% endif %}
     {% else %}
-    <p class="mt-4 text-sm text-gray-500">표시할 피드가 없습니다.</p>
+    <p data-role="feed-empty" class="mt-4 text-sm text-gray-500">표시할 피드가 없습니다.</p>
     {% endif %}
   </section>
 
   {% if not has_subscriptions %}
   <section class="rounded-2xl border border-dashed border-gray-300 bg-white p-8 text-center shadow-sm">
-    <h2 class="text-lg font-semibold text-gray-900">No subscriptions yet</h2>
-    <p class="mt-2 text-sm text-gray-500">관심 종목/섹터를 추가하면 개인화된 대시보드가 표시됩니다.</p>
-    <a href="{{ nav_links.watchlist }}" class="mt-4 inline-flex rounded-xl px-4 py-2 text-sm font-medium text-white {{ accent_btn_class }}">Go To Watchlist</a>
+    <h2 class="text-lg font-semibold text-gray-900">구독이 아직 없습니다</h2>
+    <p class="mt-2 text-sm text-gray-500">관심 종목/섹터를 추가하면 개인화된 요약이 표시됩니다.</p>
+    <a href="{{ nav_links.watchlist }}" class="mt-4 inline-flex rounded-xl px-4 py-2 text-sm font-medium text-white {{ accent_btn_class }}">관심목록으로 이동</a>
   </section>
   {% else %}
   <div class="grid gap-4 lg:grid-cols-2">
     <section class="rounded-2xl bg-white p-6 shadow-sm">
       <div class="flex items-center justify-between">
-        <h2 class="text-lg font-semibold text-gray-900">Subscribed Tickers</h2>
-        <a href="{{ nav_links.watchlist }}" class="text-sm font-medium {{ accent_link_class }}">Manage</a>
+        <h2 class="text-lg font-semibold text-gray-900">구독 종목</h2>
+        <a href="{{ nav_links.watchlist }}" class="text-sm font-medium {{ accent_link_class }}">관리</a>
       </div>
       <div class="mt-4 space-y-3">
         {% for row in subscribed_stocks %}
@@ -128,8 +153,8 @@
 
     <section class="rounded-2xl bg-white p-6 shadow-sm">
       <div class="flex items-center justify-between">
-        <h2 class="text-lg font-semibold text-gray-900">Subscribed Sectors</h2>
-        <a href="{{ nav_links.watchlist }}" class="text-sm font-medium {{ accent_link_class }}">Manage</a>
+        <h2 class="text-lg font-semibold text-gray-900">구독 섹터</h2>
+        <a href="{{ nav_links.watchlist }}" class="text-sm font-medium {{ accent_link_class }}">관리</a>
       </div>
       <div class="mt-4 space-y-3">
         {% for row in subscribed_sectors %}
@@ -148,16 +173,16 @@
   {% endif %}
 
   <section class="rounded-2xl bg-white p-6 shadow-sm">
-    <h2 class="text-lg font-semibold text-gray-900">Recent Stock Digests</h2>
+    <h2 class="text-lg font-semibold text-gray-900">최근 종목 요약</h2>
     {% if rows %}
     <div class="mt-4 overflow-x-auto">
       <table class="min-w-full divide-y divide-gray-200 text-sm">
         <thead class="bg-white text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
           <tr>
-            <th class="px-4 py-3">Code</th>
-            <th class="px-4 py-3">Name</th>
-            <th class="px-4 py-3">Summary</th>
-            <th class="px-4 py-3">As Of</th>
+            <th class="px-4 py-3">코드</th>
+            <th class="px-4 py-3">종목명</th>
+            <th class="px-4 py-3">요약</th>
+            <th class="px-4 py-3">기준시각</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100 text-gray-900">
@@ -179,22 +204,4 @@
     {% endif %}
   </section>
 </section>
-{% endblock %}
-
-{% block scripts %}
-<script>
-  const feedMoreButton = document.getElementById("load-more-feed");
-  if (feedMoreButton) {
-    feedMoreButton.addEventListener("click", () => {
-      const hiddenRows = Array.from(document.querySelectorAll(".extra-feed"));
-      hiddenRows.slice(0, 10).forEach((el) => {
-        el.classList.remove("hidden");
-        el.classList.remove("extra-feed");
-      });
-      if (document.querySelectorAll(".extra-feed").length === 0) {
-        feedMoreButton.classList.add("hidden");
-      }
-    });
-  }
-</script>
 {% endblock %}

@@ -17,20 +17,22 @@ def upsert_daily_digest(
     change_3: str,
     open_questions: str,
     refs: list[dict[str, Any]],
+    prompt_version: str = "",
 ) -> None:
     now_iso = now_utc_iso()
     conn.execute(
         """
         INSERT INTO daily_digests(
           entity_type, entity_id, market, digest_date, summary_8line, change_3, open_questions,
-          refs_json, created_at, updated_at
+          refs_json, prompt_version, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(entity_type, entity_id, market, digest_date) DO UPDATE SET
           summary_8line=excluded.summary_8line,
           change_3=excluded.change_3,
           open_questions=excluded.open_questions,
           refs_json=excluded.refs_json,
+          prompt_version=excluded.prompt_version,
           updated_at=excluded.updated_at
         """,
         (
@@ -42,6 +44,7 @@ def upsert_daily_digest(
             change_3,
             open_questions,
             json.dumps(refs, ensure_ascii=False),
+            str(prompt_version or ""),
             now_iso,
             now_iso,
         ),
@@ -113,7 +116,7 @@ def _row_to_dict(row) -> dict[str, Any]:
         "change_3": str(row["change_3"] or ""),
         "open_questions": str(row["open_questions"] or ""),
         "refs": refs if isinstance(refs, list) else [],
+        "prompt_version": str(row["prompt_version"] or ""),
         "created_at": str(row["created_at"] or ""),
         "updated_at": str(row["updated_at"] or ""),
     }
-

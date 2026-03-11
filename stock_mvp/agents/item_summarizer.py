@@ -20,6 +20,9 @@ from stock_mvp.llm_client import LLMClient
 from stock_mvp.storage import evidence_repo, item_summary_repo
 from stock_mvp.utils import compact_text, parse_datetime_maybe, url_hash
 
+ITEM_SUMMARY_PROMPT_VERSION = "m4_item_v1"
+MIN_MAPPING_SCORE = 0.55
+
 
 class ItemSummarizerAgent:
     def __init__(self, settings: Settings | None = None):
@@ -42,14 +45,21 @@ class ItemSummarizerAgent:
             lookback_days=lookback_days,
             top_n_per_stock=max(1, int(self.settings.summary_top_n_per_stock)),
             min_relevance=float(self.settings.summary_min_relevance),
+            min_mapping_score=MIN_MAPPING_SCORE,
             limit=limit,
         )
 
         created = 0
         skipped = 0
         errors = 0
+        total = len(rows)
+        if total > 0:
+            print(
+                "[PROGRESS] item_summarizer start "
+                f"market={market.upper()} total_items={total}"
+            )
 
-        for row in rows:
+        for idx, row in enumerate(rows, start=1):
             item_id = int(row["item_id"])
             try:
                 card = evidence_repo.get_card_by_item_id(conn, item_id=item_id)
@@ -59,15 +69,17 @@ class ItemSummarizerAgent:
 
                 llm_item = self._build_item_summary_with_llm(item_id=item_id, row=row, card=card)
                 if llm_item is not None:
-                    summary_text = llm_item["short_summary"]
+                    summary_text = self._quality_guard_summary_text(llm_item["short_summary"])
                     impact_label = llm_item["impact_label"]
-                    feed_one_liner = llm_item["feed_one_liner"]
-                    detail_bullets = llm_item["detail_bullets"]
+                    feed_one_liner = self._quality_guard_one_liner(llm_item["feed_one_liner"])
+                    detail_bullets = self._quality_guard_bullets(llm_item["detail_bullets"])
                 else:
-                    summary_text = self._build_short_summary(item_id=item_id, card=card)
+                    summary_text = self._quality_guard_summary_text(self._build_short_summary(item_id=item_id, card=card))
                     impact_label = self._detect_impact_label(row=row, card=card)
-                    feed_one_liner = self._build_feed_one_liner(row=row, card=card, impact_label=impact_label)
-                    detail_bullets = self._build_detail_bullets(card=card)
+                    feed_one_liner = self._quality_guard_one_liner(
+                        self._build_feed_one_liner(row=row, card=card, impact_label=impact_label)
+                    )
+                    detail_bullets = self._quality_guard_bullets(self._build_detail_bullets(card=card))
 
                 related_refs = self._build_related_refs(row=row, card=card)
                 item_summary_repo.upsert_item_summary(
@@ -78,12 +90,17 @@ class ItemSummarizerAgent:
                     feed_one_liner=feed_one_liner,
                     detail_bullets=detail_bullets,
                     related_refs=related_refs,
+                    prompt_version=ITEM_SUMMARY_PROMPT_VERSION,
                 )
                 created += 1
             except Exception as exc:
                 errors += 1
                 print(f"[WARN] item_summarizer failed: item_id={item_id} error={exc}")
-                continue
+            if idx == 1 or idx == total or idx % 20 == 0:
+                print(
+                    "[PROGRESS] item_summarizer "
+                    f"{idx}/{total} created={created} skipped={skipped} errors={errors}"
+                )
             if created >= limit:
                 break
 
@@ -259,6 +276,13 @@ class ItemSummarizerAgent:
         title = compact_text(str(row.get("title") or ""))
         body = compact_text(str(row.get("body") or ""))
         entity_hint = compact_text(str(row.get("stock_name") or row.get("stock_code") or ""))
+        pdf_facts = _read_string_list(_safe_json_loads(row.get("pdf_facts_json")), limit=3)
+        if pdf_facts:
+            normalized = [compact_text(str(x))[:220] for x in pdf_facts if compact_text(str(x))]
+            if normalized:
+                while len(normalized) < 3:
+                    normalized.append(normalized[-1])
+                return normalized[:3]
 
         candidates = split_sentences(f"{title}. {body}", max_len=220)
         facts: list[str] = []
@@ -284,6 +308,44 @@ class ItemSummarizerAgent:
         while len(facts) < 3:
             facts.append(facts[-1])
         return facts[:3]
+
+    def _quality_guard_summary_text(self, text: str) -> str:
+        lines = [compact_text(x) for x in str(text or "").splitlines() if compact_text(x)]
+        if not lines:
+            return text
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for line in lines:
+            norm = line.lower()
+            if norm in seen:
+                continue
+            seen.add(norm)
+            deduped.append(line[:260])
+            if len(deduped) >= 5:
+                break
+        return "\n".join(deduped)
+
+    def _quality_guard_one_liner(self, text: str) -> str:
+        value = compact_text(str(text or ""))
+        if not value:
+            return ""
+        return value[:140]
+
+    def _quality_guard_bullets(self, bullets: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in list(bullets or []):
+            text = compact_text(str(raw))
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(text[:220])
+            if len(out) >= 5:
+                break
+        return out
 
     def _build_interpretation(self, row: dict[str, Any], *, facts: list[str]) -> str:
         source = source_type_from_item(str(row.get("source") or ""), str(row.get("doc_type") or ""))
@@ -560,3 +622,15 @@ def _read_string_list(raw: Any, *, limit: int) -> list[str]:
         if len(out) >= max(1, limit):
             break
     return out
+
+
+def _safe_json_loads(raw: Any) -> Any:
+    if isinstance(raw, (list, dict)):
+        return raw
+    text = compact_text(str(raw or ""))
+    if not text:
+        return []
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return []

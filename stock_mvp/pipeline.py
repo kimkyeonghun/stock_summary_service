@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import replace
 from dataclasses import dataclass, field
@@ -12,6 +13,7 @@ from stock_mvp.agents.item_summarizer import ItemSummarizerAgent
 from stock_mvp.agents.report_writer import ReportWriterAgent
 from stock_mvp.config import Settings
 from stock_mvp.crawlers.naver_finance_research import NaverFinanceResearchCrawler
+from stock_mvp.crawlers.naver_industry_research import NaverIndustryResearchCrawler
 from stock_mvp.crawlers.naver_news import NaverNewsCrawler
 from stock_mvp.crawlers.sec_edgar import SecEdgarCrawler
 from stock_mvp.database import (
@@ -21,15 +23,21 @@ from stock_mvp.database import (
     finish_pipeline_run,
     init_db,
     insert_documents,
+    list_sectors,
     list_stocks,
     record_crawler_run_stat,
+    upsert_document_entity_mapping,
     upsert_financial_snapshot,
+    upsert_report_pdf_extract_by_identity,
+    upsert_sector_documents,
     upsert_stocks,
 )
+from stock_mvp.entity_mapping import map_document_to_primary_ticker
 from stock_mvp.financials import FinancialCollector
-from stock_mvp.models import Stock
+from stock_mvp.models import SectorCollectedDocument, Stock
 from stock_mvp.relevance import evaluate_stock_document_relevance, passes_relevance
 from stock_mvp.stocks import DEFAULT_STOCKS
+from stock_mvp.utils import compact_text, normalize_url, url_hash
 
 
 @dataclass
@@ -68,6 +76,7 @@ class CollectionPipeline:
         self.entity_digest_agent = EntityDigestAgent(settings)
         self.report_writer_agent = ReportWriterAgent(settings)
         self.financial_collector = FinancialCollector(settings)
+        self.industry_research_crawler = NaverIndustryResearchCrawler(settings)
         self.crawlers = [
             NaverNewsCrawler(settings),
             NaverFinanceResearchCrawler(settings),
@@ -88,6 +97,7 @@ class CollectionPipeline:
             if stock_count == 0:
                 upsert_stocks(conn, DEFAULT_STOCKS)
             selected = self._selected_stocks(conn, stock_codes, market=market)
+            market_stock_map = self._stocks_by_market(conn)
             requested = ",".join(stock_codes) if stock_codes else ""
             run_id = self._create_pipeline_run_with_lock(
                 conn,
@@ -99,10 +109,16 @@ class CollectionPipeline:
             for crawler in self.crawlers:
                 if hasattr(crawler, "reset_run_state"):
                     crawler.reset_run_state()
+            self.industry_research_crawler.reset_run_state()
 
             try:
-                for stock in selected:
-                    for crawler in self.crawlers:
+                total_stocks = len(selected)
+                for stock_idx, stock in enumerate(selected, start=1):
+                    print(
+                        "[PROGRESS] collect stock "
+                        f"{stock_idx}/{total_stocks} code={stock.code} market={stock.market}"
+                    )
+                    for crawler_idx, crawler in enumerate(self.crawlers, start=1):
                         per_source = self._limit_for_crawler(crawler.source, crawler.doc_type)
                         docs, attempts, error_message, duration_ms = self._collect_with_retries(
                             crawler=crawler,
@@ -114,6 +130,7 @@ class CollectionPipeline:
                             source=crawler.source,
                             doc_type=crawler.doc_type,
                             docs=docs,
+                            market_stocks=market_stock_map.get(stock.market.upper(), []),
                         )
                         if error_message:
                             stats.error_count += 1
@@ -125,6 +142,14 @@ class CollectionPipeline:
                             print(f"[WARN] {detail}")
 
                         inserted, skipped = insert_documents(conn, filtered_docs, commit=False)
+                        self._upsert_entity_mappings_for_docs(
+                            conn,
+                            docs=filtered_docs,
+                            source=crawler.source,
+                            doc_type=crawler.doc_type,
+                            market_stocks=market_stock_map.get(stock.market.upper(), []),
+                        )
+                        self._upsert_pdf_extracts_if_any(conn, crawler, stock_code=stock.code)
                         stats.fetched_docs += len(docs)
                         stats.inserted_docs += inserted
                         stats.skipped_docs += skipped + relevance_dropped
@@ -147,6 +172,13 @@ class CollectionPipeline:
                             attempt_count=attempts,
                             duration_ms=duration_ms,
                             commit=False,
+                        )
+                        print(
+                            "[PROGRESS] collect source done "
+                            f"stock={stock.code} source={crawler.source} "
+                            f"{crawler_idx}/{len(self.crawlers)} fetched={len(docs)} "
+                            f"inserted={inserted} skipped={skipped + relevance_dropped} "
+                            f"attempts={attempts} duration_ms={duration_ms}"
                         )
 
                     if self.settings.enable_financial_collection:
@@ -171,12 +203,35 @@ class CollectionPipeline:
                                 print(f"[WARN] {detail}")
                         else:
                             stats.financial_snapshots_skipped += 1
+                    print(
+                        "[PROGRESS] collect stock done "
+                        f"{stock_idx}/{total_stocks} code={stock.code} "
+                        f"fetched_docs={stats.fetched_docs} inserted_docs={stats.inserted_docs} "
+                        f"skipped_docs={stats.skipped_docs}"
+                    )
                     conn.commit()
 
+                self._collect_sector_industry_reports(
+                    conn,
+                    selected=selected,
+                    stats=stats,
+                    run_id=run_id,
+                    enabled=include_sector_steps,
+                )
+
                 if include_agent_steps:
+                    print("[PROGRESS] agent pipeline start")
                     self._run_agent_steps(conn, selected=selected, include_sector_steps=include_sector_steps, stats=stats)
                     # Keep legacy field for pipeline_runs compatibility.
                     stats.summaries_written = stats.ticker_digests_written
+                    print(
+                        "[PROGRESS] agent pipeline done "
+                        f"item_summaries={stats.item_summaries_written} "
+                        f"ticker_digests={stats.ticker_digests_written} "
+                        f"ticker_reports={stats.ticker_reports_written} "
+                        f"sector_digests={stats.sector_digests_written} "
+                        f"sector_reports={stats.sector_reports_written}"
+                    )
 
                 finish_pipeline_run(
                     conn,
@@ -381,6 +436,14 @@ class CollectionPipeline:
             rows = [r for r in rows if str(r["code"]).upper() in code_set]
         return [row_to_stock(r) for r in rows]
 
+    @staticmethod
+    def _stocks_by_market(conn) -> dict[str, list[Stock]]:
+        grouped: dict[str, list[Stock]] = {}
+        for row in list_stocks(conn):
+            stock = row_to_stock(row)
+            grouped.setdefault(stock.market.upper(), []).append(stock)
+        return grouped
+
     def _limit_for_crawler(self, source: str, doc_type: str) -> int:
         if source == "naver_news":
             return max(1, self.settings.naver_news_per_stock)
@@ -409,7 +472,14 @@ class CollectionPipeline:
         duration_ms = int((time.perf_counter() - start) * 1000)
         return docs, attempts, error_message, duration_ms
 
-    def _filter_docs_by_relevance(self, stock: Stock, source: str, doc_type: str, docs: list) -> tuple[list, int]:
+    def _filter_docs_by_relevance(
+        self,
+        stock: Stock,
+        source: str,
+        doc_type: str,
+        docs: list,
+        market_stocks: list[Stock],
+    ) -> tuple[list, int]:
         kept: list = []
         dropped = 0
         for doc in docs:
@@ -423,12 +493,24 @@ class CollectionPipeline:
             )
             # Store-all mode: keep all collected docs and defer strict filtering to downstream ranking/UI.
             if self.settings.collect_store_all_docs:
+                mapped = map_document_to_primary_ticker(
+                    title=str(doc.title or ""),
+                    body=str(doc.body or ""),
+                    url=str(doc.url or ""),
+                    source=source,
+                    doc_type=doc_type,
+                    market_stocks=market_stocks,
+                    hinted_stock_code=stock.code,
+                )
+                mapped_score = float(result.score)
+                if mapped.entity_id != stock.code.upper():
+                    mapped_score = min(mapped_score, 0.18)
                 kept.append(
                     replace(
                         doc,
-                        relevance_score=result.score,
+                        relevance_score=mapped_score,
                         relevance_reason=result.reason,
-                        matched_alias=result.matched_alias,
+                        matched_alias=result.matched_alias if mapped.entity_id == stock.code.upper() else "",
                     )
                 )
                 continue
@@ -444,6 +526,190 @@ class CollectionPipeline:
                 )
             )
         return kept, dropped
+
+    def _collect_sector_industry_reports(
+        self,
+        conn,
+        *,
+        selected: list[Stock],
+        stats: PipelineStats,
+        run_id: int,
+        enabled: bool,
+    ) -> None:
+        if not enabled:
+            return
+        has_kr = any(str(s.market or "").upper() == "KR" for s in selected)
+        if not has_kr:
+            return
+
+        limit = max(1, int(self.settings.naver_industry_reports_per_run))
+        print(
+            "[PROGRESS] sector industry collect start "
+            f"source={self.industry_research_crawler.source} limit={limit}"
+        )
+        docs, attempts, error_message, duration_ms = self._collect_industry_reports_with_retries(limit=limit)
+        if error_message:
+            stats.error_count += 1
+            detail = (
+                f"crawler source={self.industry_research_crawler.source} stock=KR_SECTOR "
+                f"attempts={attempts} error={error_message}"
+            )
+            stats.error_details.append(detail)
+            print(f"[WARN] {detail}")
+
+        sector_rows = list_sectors(conn, active_only=True)
+        sector_code_by_name = self._sector_code_by_name(sector_rows)
+        inserted, skipped, unmapped = upsert_sector_documents(
+            conn,
+            docs,
+            sector_code_by_name=sector_code_by_name,
+            commit=False,
+        )
+        stats.sector_docs_written += inserted
+
+        if unmapped > 0:
+            print(
+                "[INFO] naver_industry_research unmapped sector reports "
+                f"count={unmapped}/{len(docs)}"
+            )
+
+        record_crawler_run_stat(
+            conn,
+            run_id=run_id,
+            stock_code="KR_SECTOR",
+            source=self.industry_research_crawler.source,
+            doc_type=self.industry_research_crawler.doc_type,
+            fetched_count=len(docs),
+            inserted_count=inserted,
+            skipped_count=skipped + unmapped,
+            error_message=error_message,
+            attempt_count=attempts,
+            duration_ms=duration_ms,
+            commit=False,
+        )
+        print(
+            "[PROGRESS] sector industry collect done "
+            f"fetched={len(docs)} inserted={inserted} skipped={skipped + unmapped} "
+            f"unmapped={unmapped} attempts={attempts} duration_ms={duration_ms}"
+        )
+        conn.commit()
+
+    def _collect_industry_reports_with_retries(self, *, limit: int) -> tuple[list[SectorCollectedDocument], int, str | None, int]:
+        max_retries = max(0, self.settings.crawler_max_retries)
+        attempts = 0
+        error_message: str | None = None
+        start = time.perf_counter()
+        docs: list[SectorCollectedDocument] = []
+        for _ in range(max_retries + 1):
+            attempts += 1
+            try:
+                docs = self.industry_research_crawler.collect_sector_reports(limit=limit)
+                error_message = None
+                break
+            except Exception as exc:  # noqa: PERF203
+                error_message = str(exc)
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return docs, attempts, error_message, duration_ms
+
+    @staticmethod
+    def _sector_code_by_name(sector_rows) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        for row in sector_rows:
+            sector_code = str(row["sector_code"])
+            for raw in (str(row["sector_name_ko"] or ""), str(row["sector_name_en"] or "")):
+                name = compact_sector_name(raw)
+                if name:
+                    mapping.setdefault(name, sector_code)
+
+        # Additional aliases for common variants.
+        extra: dict[str, str] = {}
+        for key, code in list(mapping.items()):
+            short = key.replace("업종", "").replace("산업", "").strip()
+            if short:
+                extra.setdefault(short, code)
+        mapping.update(extra)
+        return mapping
+
+    def _upsert_entity_mappings_for_docs(
+        self,
+        conn,
+        *,
+        docs: list,
+        source: str,
+        doc_type: str,
+        market_stocks: list[Stock],
+    ) -> None:
+        for doc in docs:
+            mapped = map_document_to_primary_ticker(
+                title=str(doc.title or ""),
+                body=str(doc.body or ""),
+                url=str(doc.url or ""),
+                source=source,
+                doc_type=doc_type,
+                market_stocks=market_stocks,
+                hinted_stock_code=str(doc.stock_code or ""),
+            )
+            doc_id = self._find_document_id(
+                conn,
+                stock_code=str(doc.stock_code or ""),
+                source=str(doc.source or ""),
+                url=str(doc.url or ""),
+            )
+            if doc_id <= 0:
+                continue
+            upsert_document_entity_mapping(
+                conn,
+                document_id=doc_id,
+                entity_type=mapped.entity_type,
+                entity_id=mapped.entity_id,
+                score=mapped.score,
+                reason=mapped.reason,
+                commit=False,
+            )
+
+    def _upsert_pdf_extracts_if_any(self, conn, crawler, *, stock_code: str) -> None:
+        if not hasattr(crawler, "consume_pdf_extract_records"):
+            return
+        try:
+            records = crawler.consume_pdf_extract_records()
+        except Exception:
+            records = []
+        if not isinstance(records, list):
+            return
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("stock_code") or "").strip().upper() != stock_code.upper():
+                continue
+            upsert_report_pdf_extract_by_identity(
+                conn,
+                stock_code=stock_code,
+                source=str(record.get("source") or ""),
+                url=str(record.get("url") or ""),
+                parse_status=str(record.get("parse_status") or ""),
+                page_count=int(record.get("page_count") or 0),
+                text_excerpt=str(record.get("text_excerpt") or ""),
+                facts=list(record.get("facts") or []),
+                commit=False,
+            )
+
+    @staticmethod
+    def _find_document_id(conn, *, stock_code: str, source: str, url: str) -> int:
+        normalized_url = normalize_url(url) or url
+        key = url_hash(normalized_url)
+        row = conn.execute(
+            """
+            SELECT id
+            FROM documents
+            WHERE stock_code = ? AND source = ? AND url_hash = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (stock_code, source, key),
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["id"])
 
     def _send_error_alert(self, stats: PipelineStats) -> None:
         if not self.settings.telegram_bot_token or not self.settings.telegram_chat_id:
@@ -494,3 +760,12 @@ def row_to_stock(row) -> Stock:
         universe_source=row["universe_source"],
         rank=row["rank"],
     )
+
+
+def compact_sector_name(value: str) -> str:
+    text = compact_text(value).lower()
+    if not text:
+        return ""
+    text = re.sub(r"\(.*?\)", "", text)
+    text = re.sub(r"[^0-9a-z가-힣]+", "", text)
+    return text

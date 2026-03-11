@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,7 @@ from stock_mvp.models import (
     GeneratedSummary,
     PriceBar,
     Sector,
+    SectorCollectedDocument,
     SectorGeneratedSummary,
     Stock,
     StockSectorMap,
@@ -33,6 +35,22 @@ CREATE TABLE IF NOT EXISTS stocks (
     rank INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS stock_profiles (
+    stock_code TEXT PRIMARY KEY,
+    market TEXT NOT NULL,
+    description_ko TEXT NOT NULL,
+    description_raw TEXT,
+    source TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    is_manual INTEGER NOT NULL DEFAULT 0,
+    source_updated_at TEXT,
+    collected_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(stock_code) REFERENCES stocks(code) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_stock_profiles_market ON stock_profiles(market, stock_code);
+CREATE INDEX IF NOT EXISTS idx_stock_profiles_updated_at ON stock_profiles(updated_at);
 
 CREATE TABLE IF NOT EXISTS sectors (
     sector_code TEXT PRIMARY KEY,
@@ -83,6 +101,31 @@ CREATE INDEX IF NOT EXISTS idx_documents_stock_type_recent ON documents(
     doc_type,
     COALESCE(published_at, collected_at) DESC
 );
+
+CREATE TABLE IF NOT EXISTS document_entity_map (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    score REAL NOT NULL DEFAULT 0,
+    reason_json TEXT NOT NULL DEFAULT '{}',
+    assigned_at TEXT NOT NULL,
+    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    UNIQUE(document_id, entity_type)
+);
+CREATE INDEX IF NOT EXISTS idx_document_entity_map_entity ON document_entity_map(entity_type, entity_id, score DESC);
+CREATE INDEX IF NOT EXISTS idx_document_entity_map_doc ON document_entity_map(document_id);
+
+CREATE TABLE IF NOT EXISTS report_pdf_extracts (
+    document_id INTEGER PRIMARY KEY,
+    parse_status TEXT NOT NULL,
+    page_count INTEGER NOT NULL DEFAULT 0,
+    text_excerpt TEXT NOT NULL DEFAULT '',
+    facts_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_report_pdf_extracts_status ON report_pdf_extracts(parse_status, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS financial_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -219,6 +262,7 @@ CREATE TABLE IF NOT EXISTS item_summaries (
     feed_one_liner TEXT,
     detail_bullets_json TEXT NOT NULL DEFAULT '[]',
     related_refs_json TEXT NOT NULL DEFAULT '[]',
+    prompt_version TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(item_id) REFERENCES documents(id) ON DELETE CASCADE
@@ -257,6 +301,7 @@ CREATE TABLE IF NOT EXISTS daily_digests (
     change_3 TEXT NOT NULL,
     open_questions TEXT NOT NULL,
     refs_json TEXT NOT NULL,
+    prompt_version TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(entity_type, entity_id, market, digest_date)
@@ -332,6 +377,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     _migrate_stocks_table(conn)
     _migrate_documents_relevance_columns(conn)
     _migrate_item_summaries_columns(conn)
+    _migrate_daily_digests_columns(conn)
     if _get_app_meta(conn, MIGRATION_NFR_URLS_KEY) != "done":
         _migrate_naver_finance_research_urls(conn)
         _set_app_meta(conn, MIGRATION_NFR_URLS_KEY, "done")
@@ -405,6 +451,85 @@ def get_stock(conn: sqlite3.Connection, code: str) -> sqlite3.Row | None:
         """,
         (code,),
     ).fetchone()
+
+
+def get_stock_profile(conn: sqlite3.Connection, stock_code: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT
+          stock_code,
+          market,
+          description_ko,
+          description_raw,
+          source,
+          source_url,
+          is_manual,
+          source_updated_at,
+          collected_at,
+          updated_at
+        FROM stock_profiles
+        WHERE stock_code = ?
+        """,
+        (stock_code,),
+    ).fetchone()
+
+
+def upsert_stock_profile(
+    conn: sqlite3.Connection,
+    *,
+    stock_code: str,
+    market: str,
+    description_ko: str,
+    description_raw: str,
+    source: str,
+    source_url: str,
+    is_manual: bool = False,
+    source_updated_at: str | None = None,
+    force: bool = False,
+    commit: bool = True,
+) -> bool:
+    existing = get_stock_profile(conn, stock_code)
+    existing_is_manual = bool(existing["is_manual"]) if existing is not None else False
+    if existing_is_manual and not is_manual and not force:
+        return False
+
+    now_iso = now_utc_iso()
+    normalized_lines = [compact_text(x) for x in str(description_ko or "").splitlines() if compact_text(x)]
+    description_ko_norm = "\n".join(normalized_lines) if normalized_lines else compact_text(str(description_ko or ""))
+    conn.execute(
+        """
+        INSERT INTO stock_profiles(
+            stock_code, market, description_ko, description_raw, source, source_url,
+            is_manual, source_updated_at, collected_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(stock_code) DO UPDATE SET
+            market=excluded.market,
+            description_ko=excluded.description_ko,
+            description_raw=excluded.description_raw,
+            source=excluded.source,
+            source_url=excluded.source_url,
+            is_manual=excluded.is_manual,
+            source_updated_at=excluded.source_updated_at,
+            collected_at=excluded.collected_at,
+            updated_at=excluded.updated_at
+        """,
+        (
+            stock_code,
+            market,
+            description_ko_norm,
+            compact_text(description_raw),
+            source.strip().lower(),
+            source_url.strip(),
+            1 if is_manual else 0,
+            compact_text(str(source_updated_at or "")),
+            now_iso,
+            now_iso,
+        ),
+    )
+    if commit:
+        conn.commit()
+    return True
 
 
 def upsert_sectors(conn: sqlite3.Connection, sectors: list[Sector]) -> None:
@@ -648,6 +773,160 @@ def latest_documents_by_type(
     LIMIT ?
     """
     return conn.execute(sql, (stock_code, compact_doc_type(doc_type), limit)).fetchall()
+
+
+def upsert_document_entity_mapping(
+    conn: sqlite3.Connection,
+    *,
+    document_id: int,
+    entity_type: str,
+    entity_id: str,
+    score: float,
+    reason: dict[str, object] | None = None,
+    assigned_at: str | None = None,
+    commit: bool = True,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO document_entity_map(
+          document_id, entity_type, entity_id, score, reason_json, assigned_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(document_id, entity_type) DO UPDATE SET
+          entity_id=excluded.entity_id,
+          score=excluded.score,
+          reason_json=excluded.reason_json,
+          assigned_at=excluded.assigned_at
+        """,
+        (
+            int(document_id),
+            compact_text(entity_type).lower() or "ticker",
+            compact_text(entity_id).upper(),
+            max(0.0, min(float(score), 1.0)),
+            json.dumps(reason or {}, ensure_ascii=False),
+            compact_text(str(assigned_at or "")) or now_utc_iso(),
+        ),
+    )
+    if commit:
+        conn.commit()
+
+
+def list_document_entity_mappings(
+    conn: sqlite3.Connection,
+    *,
+    market: str | None = None,
+    stock_code: str | None = None,
+    limit: int = 200,
+) -> list[sqlite3.Row]:
+    sql = """
+    SELECT
+      m.document_id,
+      m.entity_type,
+      m.entity_id,
+      m.score,
+      m.reason_json,
+      m.assigned_at,
+      d.stock_code,
+      d.source,
+      d.doc_type,
+      d.title,
+      d.url,
+      COALESCE(d.published_at, d.collected_at) AS published_at,
+      s.market
+    FROM document_entity_map m
+    JOIN documents d ON d.id = m.document_id
+    JOIN stocks s ON s.code = d.stock_code
+    WHERE 1=1
+    """
+    params: list[object] = []
+    if market:
+        sql += " AND lower(s.market) = lower(?)"
+        params.append(market)
+    if stock_code:
+        sql += " AND d.stock_code = ?"
+        params.append(stock_code)
+    sql += """
+    ORDER BY datetime(COALESCE(d.published_at, d.collected_at)) DESC, d.id DESC
+    LIMIT ?
+    """
+    params.append(max(1, int(limit)))
+    return conn.execute(sql, tuple(params)).fetchall()
+
+
+def upsert_report_pdf_extract(
+    conn: sqlite3.Connection,
+    *,
+    document_id: int,
+    parse_status: str,
+    page_count: int,
+    text_excerpt: str,
+    facts: list[str] | None = None,
+    commit: bool = True,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO report_pdf_extracts(
+          document_id, parse_status, page_count, text_excerpt, facts_json, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(document_id) DO UPDATE SET
+          parse_status=excluded.parse_status,
+          page_count=excluded.page_count,
+          text_excerpt=excluded.text_excerpt,
+          facts_json=excluded.facts_json,
+          updated_at=excluded.updated_at
+        """,
+        (
+            int(document_id),
+            compact_text(parse_status).lower() or "none",
+            max(0, int(page_count)),
+            compact_text(text_excerpt)[:2400],
+            json.dumps(list(facts or []), ensure_ascii=False),
+            now_utc_iso(),
+        ),
+    )
+    if commit:
+        conn.commit()
+
+
+def upsert_report_pdf_extract_by_identity(
+    conn: sqlite3.Connection,
+    *,
+    stock_code: str,
+    source: str,
+    url: str,
+    parse_status: str,
+    page_count: int,
+    text_excerpt: str,
+    facts: list[str] | None = None,
+    commit: bool = True,
+) -> bool:
+    normalized_url = normalize_url(url) or url
+    normalized_hash = url_hash(normalized_url)
+    row = conn.execute(
+        """
+        SELECT id
+        FROM documents
+        WHERE stock_code = ?
+          AND source = ?
+          AND url_hash = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (stock_code, source, normalized_hash),
+    ).fetchone()
+    if row is None:
+        return False
+    upsert_report_pdf_extract(
+        conn,
+        document_id=int(row["id"]),
+        parse_status=parse_status,
+        page_count=page_count,
+        text_excerpt=text_excerpt,
+        facts=facts,
+        commit=commit,
+    )
+    return True
 
 
 def upsert_financial_snapshot(conn: sqlite3.Connection, snapshot: FinancialSnapshot, commit: bool = True) -> int:
@@ -1004,6 +1283,100 @@ def latest_sector_documents(
         """,
         (sector_code, f"-{lookback_days} days", limit),
     ).fetchall()
+
+
+def upsert_sector_documents(
+    conn: sqlite3.Connection,
+    docs: list[SectorCollectedDocument],
+    *,
+    sector_code_by_name: dict[str, str] | None = None,
+    commit: bool = True,
+) -> tuple[int, int, int]:
+    mapping = sector_code_by_name or {}
+    inserted = 0
+    skipped = 0
+    unmapped = 0
+
+    insert_sql = """
+    INSERT INTO sector_documents(
+      sector_code, source, doc_type, title, url, published_at, body, url_hash, collected_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(sector_code, source, url_hash) DO NOTHING
+    """
+    refresh_sql = """
+    UPDATE sector_documents
+    SET
+      title = CASE WHEN length(?) > length(title) THEN ? ELSE title END,
+      published_at = COALESCE(?, published_at),
+      body = CASE WHEN length(?) > length(body) THEN ? ELSE body END,
+      collected_at = ?
+    WHERE sector_code = ? AND source = ? AND url_hash = ?
+    """
+
+    for doc in docs:
+        sector_name = _sector_name_key(doc.sector_name)
+        sector_code = mapping.get(sector_name, "")
+        if not sector_code:
+            unmapped += 1
+            continue
+
+        normalized_url = normalize_url(doc.url) or compact_text(doc.url)
+        if not normalized_url:
+            skipped += 1
+            continue
+        key = url_hash(normalized_url)
+        collected_at = now_utc_iso()
+        published_at = to_iso_or_none(doc.published_at)
+        title = compact_text(doc.title)
+        body = compact_text(doc.body)
+
+        cursor = conn.execute(
+            insert_sql,
+            (
+                sector_code,
+                compact_text(doc.source),
+                compact_text(doc.doc_type),
+                title,
+                normalized_url,
+                published_at,
+                body,
+                key,
+                collected_at,
+            ),
+        )
+        if cursor.rowcount > 0:
+            inserted += 1
+            continue
+
+        conn.execute(
+            refresh_sql,
+            (
+                title,
+                title,
+                published_at,
+                body,
+                body,
+                collected_at,
+                sector_code,
+                compact_text(doc.source),
+                key,
+            ),
+        )
+        skipped += 1
+
+    if commit:
+        conn.commit()
+    return inserted, skipped, unmapped
+
+
+def _sector_name_key(value: str) -> str:
+    text = compact_text(value).lower()
+    if not text:
+        return ""
+    text = re.sub(r"\(.*?\)", "", text)
+    text = re.sub(r"[^0-9a-z가-힣]+", "", text)
+    return text
 
 
 def sector_document_links(conn: sqlite3.Connection, sector_document_id: int) -> list[sqlite3.Row]:
@@ -1459,6 +1832,8 @@ def _migrate_item_summaries_columns(conn: sqlite3.Connection) -> None:
         alter_statements.append("ALTER TABLE item_summaries ADD COLUMN detail_bullets_json TEXT NOT NULL DEFAULT '[]'")
     if "related_refs_json" not in columns:
         alter_statements.append("ALTER TABLE item_summaries ADD COLUMN related_refs_json TEXT NOT NULL DEFAULT '[]'")
+    if "prompt_version" not in columns:
+        alter_statements.append("ALTER TABLE item_summaries ADD COLUMN prompt_version TEXT NOT NULL DEFAULT ''")
     if "updated_at" not in columns:
         alter_statements.append("ALTER TABLE item_summaries ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
     for statement in alter_statements:
@@ -1468,6 +1843,12 @@ def _migrate_item_summaries_columns(conn: sqlite3.Connection) -> None:
         "UPDATE item_summaries SET updated_at = ? WHERE COALESCE(updated_at, '') = ''",
         (now_iso,),
     )
+
+
+def _migrate_daily_digests_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(daily_digests)").fetchall()}
+    if "prompt_version" not in columns:
+        conn.execute("ALTER TABLE daily_digests ADD COLUMN prompt_version TEXT NOT NULL DEFAULT ''")
 
 
 def _migrate_naver_finance_research_urls(conn: sqlite3.Connection) -> None:

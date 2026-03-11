@@ -1,26 +1,28 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 
-{% block title %}Item Analysis - {{ item['stock_name'] }} - BriefAlpha{% endblock %}
+{% block title %}요약 상세 - {{ item['stock_name'] }} - BriefAlpha{% endblock %}
 
 {% block content %}
 {% set is_kr = current_market == 'KR' %}
 {% set accent_link_class = 'text-indigo-600 hover:text-indigo-500' if is_kr else 'text-emerald-600 hover:text-emerald-500' %}
+{% set accent_border_hover_class = 'hover:border-indigo-500 hover:text-indigo-500' if is_kr else 'hover:border-emerald-500 hover:text-emerald-500' %}
+
 <section class="space-y-6">
   <div class="rounded-2xl bg-white p-6 shadow-sm">
     <div class="flex items-start justify-between gap-3">
       <div>
-        <p class="text-sm text-gray-500">BriefAlpha 에이전트 분석</p>
+        <p class="text-sm text-gray-500">요약 상세</p>
         <h1 class="mt-1 text-2xl font-semibold text-gray-900">{{ item['stock_name'] }} ({{ item['stock_code'] }})</h1>
       </div>
-      <a href="{{ url_for('stock_detail', market=current_market.lower(), code=item['stock_code']) }}" class="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-900">돌아가기</a>
+      <a href="{{ url_for('stock_detail', market=current_market.lower(), code=item['stock_code']) }}" class="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-900 {{ accent_border_hover_class }}">종목 페이지로 이동</a>
     </div>
-    <p class="mt-4 text-sm text-gray-500">이 화면은 투자 권유가 아닌 정보 요약입니다.</p>
+    <p class="mt-3 text-sm text-gray-500">이 화면은 투자 권유가 아닌 정보 요약입니다.</p>
   </div>
 
   <article class="rounded-2xl bg-white p-6 shadow-sm">
-    <p class="text-sm text-gray-500">{{ item['published_at']|fmt_dt(current_market) }}</p>
-    <div class="mt-2 flex flex-wrap items-center gap-2">
-      <span class="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-gray-500" title="{{ item['source'] or '-' }}">
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="text-xs text-gray-500">{{ item['published_at']|fmt_dt(current_market) }}</span>
+      <span class="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-gray-500">
         {% if item['source_kind'] == 'report' %}
         <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
@@ -38,56 +40,73 @@
         {% endif %}
         <span>{{ item['source_kind_label'] }}</span>
       </span>
-      {% if item['url'] %}
-      <a href="{{ item['url'] }}" target="_blank" rel="noreferrer" class="text-xs font-medium {{ accent_link_class }}">원문 기사 보기</a>
+      {% if item['show_impact'] %}
+      <span class="text-xs {{ item['impact_css'] }}">{{ item['impact_emoji'] }} {{ item['impact_text'] }}</span>
       {% endif %}
     </div>
-    {% if item['show_impact'] %}
-    <p class="mt-2 text-sm font-semibold {{ item['impact_css'] }}">{{ item['impact_emoji'] }} {{ item['impact_text'] }}</p>
-    {% endif %}
-    <h2 class="mt-3 text-3xl font-bold leading-tight text-gray-900">{{ item['one_liner'] }}</h2>
-    <p class="mt-2 text-sm text-gray-500">에이전트의 해석 요약</p>
 
-    <div class="mt-6 rounded-xl border border-gray-200 p-5">
-      <h3 class="text-xl font-semibold text-gray-900">AI 요약</h3>
-      {% if item['detail_bullets'] %}
-      <ol class="mt-3 list-decimal space-y-3 pl-6 text-lg text-gray-900">
-        {% for bullet in item['detail_bullets'] %}
+    <h2 class="mt-3 text-2xl font-semibold leading-tight text-gray-900">{{ item['one_liner'] }}</h2>
+    {% if item['url'] %}
+    <a href="{{ item['url'] }}" target="_blank" rel="noreferrer" class="mt-3 inline-flex rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-900 {{ accent_border_hover_class }}">원문 기사 보기</a>
+    {% endif %}
+
+    {% if item['detail_preview_bullets'] %}
+    <div class="mt-4">
+      <p class="text-xs font-semibold tracking-wide text-gray-500">핵심 요약</p>
+      <ol class="mt-2 list-decimal space-y-2 pl-5 text-sm text-gray-900">
+        {% for bullet in item['detail_preview_bullets'] %}
         <li>{{ bullet }}</li>
         {% endfor %}
       </ol>
-      {% else %}
-      <p class="mt-3 text-sm text-gray-500">요약 데이터가 아직 없습니다.</p>
-      {% endif %}
     </div>
+    {% endif %}
 
-    <div class="mt-6">
-      <h3 class="text-lg font-semibold text-gray-900">관련 뉴스</h3>
-      <ul class="mt-3 space-y-2">
-        {% for ref in item['related_refs'] %}
-        <li>
-          <a href="{{ ref['url'] }}" target="_blank" rel="noreferrer" class="text-sm {{ accent_link_class }}">{{ ref['title'] }}</a>
-          <p class="text-xs text-gray-500">{{ ref['published_at']|fmt_dt(current_market) }}</p>
-        </li>
-        {% endfor %}
-        {% for row in related_rows %}
-        <li>
-          <a href="{{ row['url'] }}" target="_blank" rel="noreferrer" class="text-sm {{ accent_link_class }}">{{ row['title'] }}</a>
-          <p class="text-xs text-gray-500">{{ row['published_at']|fmt_dt(current_market) }}</p>
-        </li>
-        {% endfor %}
-      </ul>
-    </div>
+    {% if item['has_more_details'] %}
+    <details class="mt-4 rounded-xl border border-gray-200 p-4">
+      <summary class="cursor-pointer text-sm font-medium text-gray-900">더보기</summary>
+      <div class="mt-3 space-y-4">
+        {% if item['summary_has_more'] %}
+        <div>
+          <p class="text-xs font-semibold tracking-wide text-gray-500">추가 요약</p>
+          <ul class="mt-2 space-y-2">
+            {% for line in item['summary_lines'][2:] %}
+            <li class="text-sm text-gray-900">{{ line }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+
+        {% if item['detail_has_more'] %}
+        <div>
+          <p class="text-xs font-semibold tracking-wide text-gray-500">추가 설명</p>
+          <ul class="mt-2 space-y-2">
+            {% for bullet in item['detail_bullets'][2:] %}
+            <li class="text-sm text-gray-900">{{ bullet }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+
+        {% if item['related_refs'] or related_rows %}
+        <div>
+          <p class="text-xs font-semibold tracking-wide text-gray-500">관련 링크</p>
+          <ul class="mt-2 space-y-2">
+            {% for ref in item['related_refs'] %}
+            <li>
+              <a href="{{ ref['url'] }}" target="_blank" rel="noreferrer" class="text-sm {{ accent_link_class }}">{{ ref['title'] }}</a>
+            </li>
+            {% endfor %}
+            {% for row in related_rows %}
+            <li>
+              <a href="{{ row['url'] }}" target="_blank" rel="noreferrer" class="text-sm {{ accent_link_class }}">{{ row['title'] }}</a>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+      </div>
+    </details>
+    {% endif %}
   </article>
-
-  <section class="rounded-2xl bg-white p-6 shadow-sm">
-    <h3 class="text-lg font-semibold text-gray-900">빠른 요청</h3>
-    <div class="mt-3 grid gap-2 sm:grid-cols-2">
-      <button type="button" class="rounded-xl border border-gray-200 bg-white px-4 py-3 text-left text-sm text-gray-900">조금 더 쉽게 설명해줘</button>
-      <button type="button" class="rounded-xl border border-gray-200 bg-white px-4 py-3 text-left text-sm text-gray-900">최근 뉴스들만 요약해줘</button>
-      <button type="button" class="rounded-xl border border-gray-200 bg-white px-4 py-3 text-left text-sm text-gray-900">오늘 주가 알려줘</button>
-      <button type="button" class="rounded-xl border border-gray-200 bg-white px-4 py-3 text-left text-sm text-gray-900">이후 전망은 어떻게 보여</button>
-    </div>
-  </section>
 </section>
 {% endblock %}

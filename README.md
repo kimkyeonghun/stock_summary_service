@@ -5,6 +5,7 @@ Private-use stock information MVP for beginner investors.
 This project collects:
 - Naver News items by stock keyword
 - Naver Finance Research company report items (KR)
+- Naver Finance Research industry report items by sector (KR)
 - SEC EDGAR filing items for US tickers (free-first)
 
 Then it creates:
@@ -26,6 +27,7 @@ Then it creates:
 - Sector-level deduplicated document aggregation (M2-T02 baseline)
 - Sector-level 8-line summaries + sentiment (LLM-first, rule fallback)
 - Financial snapshots (PER/PBR/EPS/ROE/Market Cap) for KR/US
+- Stock company descriptions (multi-source profile + docs fallback)
 - Daily price-bar collection (KR/US) for chart/backtest foundation
 - Backtest engine v1 (buy-and-hold, monthly rebalance, benchmark compare)
 - Backtest web screen: periodic contribution (DCA) + multi-portfolio/benchmark comparison chart
@@ -110,6 +112,14 @@ Collect financial snapshots directly:
 python scripts/run_financials.py --stock-codes "005930,AAPL"
 ```
 
+Collect company descriptions directly (manual run only):
+
+```bash
+python scripts/run_profiles.py --market KR
+python scripts/run_profiles.py --stock-codes "005930,AAPL"
+python scripts/run_profiles.py --stock-codes "005930" --force
+```
+
 Collect daily price bars directly:
 
 ```bash
@@ -170,12 +180,18 @@ If set, the collector uses Naver OpenAPI first, then falls back to HTML parsing.
 Source-specific collection limits:
 - `NAVER_NEWS_PER_STOCK` (default `20`)
 - `NAVER_FINANCE_REPORTS_PER_STOCK` (default `8`)
+- `NAVER_INDUSTRY_REPORTS_PER_RUN` (default `60`, KR sector industry reports)
 - `SEC_REPORTS_PER_STOCK` (default `6`)
 
 Collection/summary flow controls:
 - `COLLECT_STORE_ALL_DOCS=true` (store all collected docs; do not drop by relevance at collect time)
 - `SUMMARY_TOP_N_PER_STOCK=10` (LLM summary candidate cap per stock within lookback)
 - `SUMMARY_MIN_RELEVANCE=0` (minimum relevance for summary candidate selection)
+
+Company profile fallback policy:
+- KR priority: manual > Naver profile > docs-derived summary > placeholder
+- US priority: manual > Yahoo profile > docs-derived summary > placeholder
+- `run_profiles.py` does not run on scheduler by default (manual execution only)
 
 Scheduler-related env vars:
 - `ENABLE_SCHEDULER=true`

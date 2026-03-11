@@ -31,8 +31,14 @@ class ReportWriterAgent:
         created = 0
         skipped = 0
         errors = 0
+        total = len(entity_ids)
+        if total > 0:
+            print(
+                "[PROGRESS] report_writer start "
+                f"entity_type={entity_type} market={market.upper()} total={total}"
+            )
 
-        for entity_id in entity_ids:
+        for idx, entity_id in enumerate(entity_ids, start=1):
             try:
                 cards = self._list_cards(
                     conn,
@@ -70,6 +76,11 @@ class ReportWriterAgent:
                 print(
                     f"[WARN] report_writer failed: entity_type={entity_type} "
                     f"entity_id={entity_id} market={market} error={exc}"
+                )
+            if idx == 1 or idx == total or idx % 20 == 0:
+                print(
+                    "[PROGRESS] report_writer "
+                    f"{idx}/{total} created={created} skipped={skipped} errors={errors}"
                 )
 
         conn.commit()

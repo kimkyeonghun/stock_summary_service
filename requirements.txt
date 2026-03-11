@@ -5,6 +5,7 @@ python-dateutil==2.9.0.post0
 APScheduler==3.10.4
 python-dotenv==1.0.1
 pypdf==5.3.1
+PyMuPDF==1.24.14
 pdfplumber==0.11.4
 pytesseract==0.3.13
 pypdfium2==4.30.0

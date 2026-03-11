@@ -18,6 +18,11 @@ except Exception:  # pragma: no cover - optional dependency fallback at runtime
     PdfReader = None  # type: ignore[assignment]
 
 try:
+    import fitz
+except Exception:  # pragma: no cover - optional dependency fallback at runtime
+    fitz = None  # type: ignore[assignment]
+
+try:
     import pdfplumber
 except Exception:  # pragma: no cover - optional dependency fallback at runtime
     pdfplumber = None  # type: ignore[assignment]
@@ -77,6 +82,7 @@ class NaverFinanceResearchCrawler(BaseCrawler):
         self._page_rows_cache: dict[int, list[dict[str, object]]] = {}
         self._report_detail_cache: dict[str, tuple[str, str]] = {}
         self._pdf_text_cache: dict[str, tuple[str, dict[str, object]]] = {}
+        self._pdf_extract_records: list[dict[str, object]] = []
         self._warned_missing_pdf_reader = False
         self._warned_missing_pdfplumber = False
         self._warned_missing_ocr_dependencies = False
@@ -86,6 +92,12 @@ class NaverFinanceResearchCrawler(BaseCrawler):
         self._page_rows_cache.clear()
         self._report_detail_cache.clear()
         self._pdf_text_cache.clear()
+        self._pdf_extract_records.clear()
+
+    def consume_pdf_extract_records(self) -> list[dict[str, object]]:
+        rows = list(self._pdf_extract_records)
+        self._pdf_extract_records.clear()
+        return rows
 
     def collect(self, stock: Stock, limit: int) -> list[CollectedDocument]:
         if stock.market != "KR":
@@ -131,7 +143,12 @@ class NaverFinanceResearchCrawler(BaseCrawler):
 
             url = self._resolve_report_url(href)
             published_at = row.get("published_at")
-            body = self._build_report_body(report_url=url, row_text=row_text, title=title)
+            body = self._build_report_body(
+                stock_code=stock.code,
+                report_url=url,
+                row_text=row_text,
+                title=title,
+            )
             docs.append(
                 CollectedDocument(
                     stock_code=stock.code,
@@ -194,24 +211,51 @@ class NaverFinanceResearchCrawler(BaseCrawler):
         self._page_rows_cache[page] = parsed_rows
         return parsed_rows
 
-    def _build_report_body(self, report_url: str, row_text: str, title: str) -> str:
+    def _build_report_body(self, *, stock_code: str, report_url: str, row_text: str, title: str) -> str:
         base_body = row_text or title
         detail_text = ""
         pdf_text = ""
         pdf_focus = ""
+        pdf_meta: dict[str, object] = {"method": "none", "pages": 0, "chars": 0}
+        parse_status = "none"
+        facts: list[str] = []
         try:
             detail_text, pdf_url = self._load_report_detail(report_url)
             if pdf_url:
                 pdf_text, pdf_meta = self._extract_pdf_text(pdf_url)
                 pdf_focus = self._build_pdf_focus_chunk(pdf_text)
+                facts = self._extract_pdf_fact_lines(pdf_focus or pdf_text)
+                parse_status = self._pdf_parse_status(pdf_meta=pdf_meta, text=pdf_text)
                 if pdf_meta.get("chars", 0):
                     print(
                         "[INFO] naver_finance_research pdf extracted "
                         f"method={pdf_meta.get('method', '')} pages={pdf_meta.get('pages', 0)} "
                         f"chars={pdf_meta.get('chars', 0)} url={pdf_url}"
                     )
+                self._pdf_extract_records.append(
+                    {
+                        "stock_code": stock_code,
+                        "source": self.source,
+                        "url": report_url,
+                        "parse_status": parse_status,
+                        "page_count": int(pdf_meta.get("pages", 0) or 0),
+                        "text_excerpt": compact_text((pdf_focus or pdf_text)[:2400]),
+                        "facts": facts,
+                    }
+                )
         except Exception as exc:
             print(f"[WARN] naver_finance_research detail parse failed: url={report_url} error={exc}")
+            self._pdf_extract_records.append(
+                {
+                    "stock_code": stock_code,
+                    "source": self.source,
+                    "url": report_url,
+                    "parse_status": "failed",
+                    "page_count": 0,
+                    "text_excerpt": "",
+                    "facts": [],
+                }
+            )
 
         body_parts = [base_body]
         if pdf_focus:
@@ -339,9 +383,9 @@ class NaverFinanceResearchCrawler(BaseCrawler):
         if cached is not None:
             return cached
 
-        if PdfReader is None and pdfplumber is None:
+        if fitz is None and PdfReader is None and pdfplumber is None:
             if not self._warned_missing_pdf_reader:
-                print("[WARN] pypdf/pdfplumber is not installed. Naver report PDF text extraction is disabled.")
+                print("[WARN] PyMuPDF/pypdf/pdfplumber is not installed. Naver report PDF text extraction is disabled.")
                 self._warned_missing_pdf_reader = True
             empty_meta = {"method": "none", "pages": 0, "chars": 0}
             self._pdf_text_cache[pdf_url] = ("", empty_meta)
@@ -357,16 +401,23 @@ class NaverFinanceResearchCrawler(BaseCrawler):
 
             primary_text = ""
             primary_pages = 0
-            if PdfReader is not None:
-                primary_text, primary_pages = self._extract_pdf_text_with_pypdf(content)
+            if fitz is not None:
+                primary_text, primary_pages = self._extract_pdf_text_with_pymupdf(content)
             else:
                 if not self._warned_missing_pdf_reader:
-                    print("[WARN] pypdf is not installed. falling back to pdfplumber for PDF extraction.")
+                    print("[WARN] PyMuPDF is not installed. falling back to pypdf/pdfplumber for PDF extraction.")
                     self._warned_missing_pdf_reader = True
 
             selected_text = primary_text
             selected_pages = primary_pages
-            selected_method = "pypdf" if primary_text else "none"
+            selected_method = "pymupdf" if primary_text else "none"
+
+            if len(selected_text) < self.pdf_min_usable_chars and PdfReader is not None:
+                fallback_text, fallback_pages = self._extract_pdf_text_with_pypdf(content)
+                if len(fallback_text) > len(selected_text):
+                    selected_text = fallback_text
+                    selected_pages = fallback_pages
+                    selected_method = "pypdf"
 
             if len(selected_text) < self.pdf_min_usable_chars and pdfplumber is not None:
                 fallback_text, fallback_pages = self._extract_pdf_text_with_pdfplumber(content)
@@ -401,6 +452,34 @@ class NaverFinanceResearchCrawler(BaseCrawler):
             empty_meta = {"method": "error", "pages": 0, "chars": 0}
             self._pdf_text_cache[pdf_url] = ("", empty_meta)
             return "", empty_meta
+
+    def _extract_pdf_text_with_pymupdf(self, content: bytes) -> tuple[str, int]:
+        if fitz is None:
+            return "", 0
+        chunks: list[str] = []
+        pages_read = 0
+        total_chars = 0
+        doc = fitz.open(stream=content, filetype="pdf")
+        for page in doc:
+            if pages_read >= self.pdf_max_pages:
+                break
+            pages_read += 1
+            try:
+                page_text = page.get_text("text") or ""
+            except Exception:
+                page_text = ""
+            page_text = compact_text(page_text)
+            if not page_text:
+                continue
+            chunks.append(page_text)
+            total_chars += len(page_text)
+            if total_chars >= self.pdf_max_chars:
+                break
+        try:
+            doc.close()
+        except Exception:
+            pass
+        return "\n".join(chunks), pages_read
 
     def _extract_pdf_text_with_pypdf(self, content: bytes) -> tuple[str, int]:
         if PdfReader is None:
@@ -551,6 +630,37 @@ class NaverFinanceResearchCrawler(BaseCrawler):
         if len(merged) > self.pdf_focus_max_chars:
             merged = merged[: self.pdf_focus_max_chars]
         return merged
+
+    def _extract_pdf_fact_lines(self, text: str) -> list[str]:
+        lines = [compact_text(x) for x in str(text or "").splitlines() if compact_text(x)]
+        if not lines:
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for line in lines:
+            if not any(ch.isdigit() for ch in line):
+                continue
+            if len(line) < 8:
+                continue
+            key = line.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(line[:220])
+            if len(out) >= 6:
+                break
+        return out
+
+    def _pdf_parse_status(self, *, pdf_meta: dict[str, object], text: str) -> str:
+        method = str(pdf_meta.get("method") or "").lower()
+        chars = int(pdf_meta.get("chars") or len(text))
+        if method == "error":
+            return "failed"
+        if chars >= self.pdf_min_usable_chars:
+            return "success"
+        if chars > 0:
+            return "partial_success"
+        return "failed"
 
     @staticmethod
     def _looks_like_pdf_ref(value: str) -> bool:

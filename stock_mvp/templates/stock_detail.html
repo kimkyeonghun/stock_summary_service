@@ -7,6 +7,8 @@
 {% set accent_btn_class = 'bg-indigo-600 hover:bg-indigo-500' if is_kr else 'bg-emerald-600 hover:bg-emerald-500' %}
 {% set accent_link_class = 'text-indigo-600 hover:text-indigo-500' if is_kr else 'text-emerald-600 hover:text-emerald-500' %}
 {% set accent_border_hover_class = 'hover:border-indigo-500 hover:text-indigo-500' if is_kr else 'hover:border-emerald-500 hover:text-emerald-500' %}
+{% set accent_chip_active_class = 'border-indigo-600 bg-indigo-600 text-white' if is_kr else 'border-emerald-600 bg-emerald-600 text-white' %}
+
 <section class="space-y-6">
   <div class="rounded-2xl bg-white p-6 shadow-sm">
     <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -16,13 +18,34 @@
         <p class="mt-2 text-sm text-gray-500">검색 키워드: {{ ", ".join(stock.queries) }}</p>
         <p class="mt-1 text-sm text-gray-500">섹터: {{ ", ".join(stock.sectors) if stock.sectors else '-' }}</p>
       </div>
-      <div class="flex items-center gap-2">
-        <form method="post" action="{{ url_for('toggle_watchlist_stock', market=current_market.lower(), code=stock.code) }}">
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          data-ajax-basket-add
+          data-market="{{ current_market.lower() }}"
+          data-stock-code="{{ stock.code }}"
+          class="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-900 {{ accent_border_hover_class }}"
+        >
+          백테스트 풀에 담기
+        </button>
+        <form
+          method="post"
+          action="{{ url_for('toggle_watchlist_stock', market=current_market.lower(), code=stock.code) }}"
+          data-ajax-watchlist-form
+          data-market="{{ current_market.lower() }}"
+          data-kind="stock"
+          data-value="{{ stock.code }}"
+          data-subscribed="{% if is_subscribed %}1{% else %}0{% endif %}"
+          data-btn-subscribe-label="구독"
+          data-btn-unsubscribe-label="구독 해제"
+          data-btn-subscribe-class="rounded-xl px-4 py-2 text-sm font-medium text-white {{ accent_btn_class }}"
+          data-btn-unsubscribe-class="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-900 {{ accent_border_hover_class }}"
+        >
           <input type="hidden" name="next" value="{{ request.path }}" />
           {% if is_subscribed %}
-          <button type="submit" class="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-900 {{ accent_border_hover_class }}">Unsubscribe</button>
+          <button data-role="watchlist-toggle-button" type="submit" class="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-900 {{ accent_border_hover_class }}">구독 해제</button>
           {% else %}
-          <button type="submit" class="rounded-xl px-4 py-2 text-sm font-medium text-white {{ accent_btn_class }}">Subscribe</button>
+          <button data-role="watchlist-toggle-button" type="submit" class="rounded-xl px-4 py-2 text-sm font-medium text-white {{ accent_btn_class }}">구독</button>
           {% endif %}
         </form>
       </div>
@@ -30,270 +53,333 @@
   </div>
 
   <section class="rounded-2xl bg-white p-6 shadow-sm">
-    <h2 class="text-lg font-semibold text-gray-900">Daily Digest</h2>
+    <h2 class="text-lg font-semibold text-gray-900">기업 설명</h2>
+    {% if stock.profile %}
+    <div class="mt-3 space-y-2">
+      {% for line in stock.profile['lines'] %}
+      <p class="text-sm text-gray-900">{{ line }}</p>
+      {% endfor %}
+    </div>
+    <div class="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+      <span>출처: {{ stock.profile['source_label'] }}</span>
+      {% if stock.profile['source_url'] %}
+      <a href="{{ stock.profile['source_url'] }}" target="_blank" rel="noreferrer" class="{{ accent_link_class }}">원문</a>
+      {% endif %}
+      {% if stock.profile['updated_at'] %}
+      <span>{{ stock.profile['updated_at']|fmt_dt(current_market) }}</span>
+      {% endif %}
+    </div>
+    {% else %}
+    <p class="mt-3 text-sm text-gray-500">기업 설명을 준비 중입니다.</p>
+    {% endif %}
+  </section>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">오늘의 요약</h2>
     {% if digest and digest_view %}
-      <div class="mt-4 space-y-4">
-        <article class="rounded-xl border border-gray-200 p-4">
-          <h3 class="text-sm font-semibold text-gray-900">8-line Summary</h3>
-          <ul class="mt-3 space-y-2">
-            {% for line in digest_view['summary_lines'] %}
+    <ul class="mt-3 space-y-2">
+      {% for line in digest_view['summary_lines'] %}
+      <li class="text-sm text-gray-900">{{ line }}</li>
+      {% endfor %}
+    </ul>
+
+    {% if digest_view['question_lines'] %}
+    <div class="mt-3">
+      <p class="text-xs font-semibold tracking-wide text-gray-500">체크포인트</p>
+      <ul class="mt-2 space-y-1">
+        {% for line in digest_view['question_lines'] %}
+        <li class="text-sm text-gray-900">{{ line }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <div class="mt-3">
+      <p class="text-xs font-semibold tracking-wide text-gray-500">근거 출처</p>
+      {% if digest_view['ref_sources'] %}
+      <div class="mt-2 flex flex-wrap gap-2">
+        {% for ref in digest_view['ref_sources'] %}
+        {% if ref['url'] %}
+        <a href="{{ ref['url'] }}" target="_blank" rel="noreferrer" class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-900 {{ accent_link_class }}">
+          {{ ref['title'] }}
+        </a>
+        {% else %}
+        <span class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-900">{{ ref['title'] }}</span>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {% if digest_view['ref_extra_count']|int > 0 %}
+      <p class="mt-2 text-xs text-gray-500">외 {{ digest_view['ref_extra_count'] }}건</p>
+      {% endif %}
+      {% else %}
+      <p class="mt-2 text-sm text-gray-500">근거 출처가 없습니다.</p>
+      {% endif %}
+    </div>
+
+    <p class="mt-3 text-xs text-gray-500">기준 시각: {{ digest['digest_date']|fmt_dt(current_market) }}</p>
+    {% else %}
+    <p class="mt-3 text-sm text-gray-500">요약이 아직 생성되지 않았습니다.</p>
+    {% endif %}
+  </section>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">AI 리포트</h2>
+    {% if agent_report %}
+    <p class="mt-2 text-xs text-gray-500">기간: {{ agent_report['period_start'] }} ~ {{ agent_report['period_end'] }}</p>
+    <details class="mt-3 rounded-xl border border-gray-200 p-4">
+      <summary class="cursor-pointer text-sm font-medium text-gray-900">더보기</summary>
+      <pre class="mt-3 overflow-x-auto whitespace-pre-wrap text-xs text-gray-900">{{ agent_report['report_md'] }}</pre>
+    </details>
+    {% else %}
+    <p class="mt-3 text-sm text-gray-500">생성된 리포트가 없습니다.</p>
+    {% endif %}
+  </section>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">변화 포인트</h2>
+    <div class="mt-4 grid gap-4 md:grid-cols-2">
+      <article class="rounded-xl border border-gray-200 p-4">
+        <h3 class="text-sm font-semibold text-gray-900">전일 변화 3개</h3>
+        {% if change_snapshot['d1_lines'] %}
+        <ul class="mt-3 space-y-2">
+          {% for line in change_snapshot['d1_preview_lines'] %}
+          <li class="text-sm text-gray-900">{{ line }}</li>
+          {% endfor %}
+        </ul>
+        {% if change_snapshot['d1_has_more'] %}
+        <details class="mt-3">
+          <summary class="cursor-pointer text-xs font-medium text-gray-500">더보기</summary>
+          <ul class="mt-2 space-y-2">
+            {% for line in change_snapshot['d1_lines'][1:] %}
             <li class="text-sm text-gray-900">{{ line }}</li>
             {% endfor %}
           </ul>
-        </article>
+        </details>
+        {% endif %}
+        {% else %}
+        <p class="mt-3 text-sm text-gray-500">유의미한 변화 없음</p>
+        {% endif %}
+      </article>
 
-        <div class="grid gap-4 md:grid-cols-2">
-          <article class="rounded-xl border border-gray-200 p-4">
-            <h3 class="text-sm font-semibold text-gray-900">Change-3</h3>
-            {% if digest_view['change_lines'] %}
-            <ul class="mt-3 space-y-2">
-              {% for line in digest_view['change_lines'] %}
-              <li class="text-sm text-gray-900">{{ line }}</li>
-              {% endfor %}
-            </ul>
-            {% else %}
-            <p class="mt-3 text-sm text-gray-500">No material change</p>
-            {% endif %}
-          </article>
-
-          <article class="rounded-xl border border-gray-200 p-4">
-            <h3 class="text-sm font-semibold text-gray-900">Open Questions</h3>
-            {% if digest_view['question_lines'] %}
-            <ul class="mt-3 space-y-2">
-              {% for line in digest_view['question_lines'] %}
-              <li class="text-sm text-gray-900">{{ line }}</li>
-              {% endfor %}
-            </ul>
-            {% else %}
-            <p class="mt-3 text-sm text-gray-500">질문이 아직 생성되지 않았습니다.</p>
-            {% endif %}
-          </article>
-        </div>
-
-        <article class="rounded-xl border border-gray-200 p-4">
-          <h3 class="text-sm font-semibold text-gray-900">Evidence Refs</h3>
-          {% if digest_view['ref_sources'] %}
-          <div class="mt-3 flex flex-wrap gap-2">
-            {% for ref in digest_view['ref_sources'] %}
-            <a href="{{ ref['url'] }}" target="_blank" rel="noreferrer" class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-900 {{ accent_link_class }}">
-              {{ ref['alias'] or ref['card_id'] }} · {{ ref['title'] }}
-            </a>
+      <article class="rounded-xl border border-gray-200 p-4">
+        <h3 class="text-sm font-semibold text-gray-900">7일 변화 3개</h3>
+        {% if change_snapshot['d7_lines'] %}
+        <ul class="mt-3 space-y-2">
+          {% for line in change_snapshot['d7_preview_lines'] %}
+          <li class="text-sm text-gray-900">{{ line }}</li>
+          {% endfor %}
+        </ul>
+        {% if change_snapshot['d7_has_more'] %}
+        <details class="mt-3">
+          <summary class="cursor-pointer text-xs font-medium text-gray-500">더보기</summary>
+          <ul class="mt-2 space-y-2">
+            {% for line in change_snapshot['d7_lines'][1:] %}
+            <li class="text-sm text-gray-900">{{ line }}</li>
             {% endfor %}
-          </div>
-          {% else %}
-          <p class="mt-3 text-sm text-gray-500">연결된 evidence source가 없습니다.</p>
-          {% endif %}
-        </article>
-      </div>
-      <p class="mt-4 text-xs text-gray-500">as_of: {{ digest['digest_date']|fmt_dt(current_market) }} / market: {{ digest['market']|upper }}</p>
-    {% else %}
-      <p class="mt-4 text-sm text-gray-500">Daily digest가 아직 생성되지 않았습니다.</p>
-    {% endif %}
+          </ul>
+        </details>
+        {% endif %}
+        {% else %}
+        <p class="mt-3 text-sm text-gray-500">유의미한 변화 없음</p>
+        {% endif %}
+      </article>
+    </div>
   </section>
 
-  <section class="rounded-2xl bg-white p-6 shadow-sm">
-    <h2 class="text-lg font-semibold text-gray-900">AI Report</h2>
-    {% if agent_report %}
-      <p class="mt-2 text-xs text-gray-500">period: {{ agent_report['period_start'] }} ~ {{ agent_report['period_end'] }}</p>
-      <pre class="mt-3 overflow-x-auto rounded-xl border border-gray-200 bg-white p-4 text-xs text-gray-900 whitespace-pre-wrap">{{ agent_report['report_md'] }}</pre>
-    {% else %}
-      <p class="mt-4 text-sm text-gray-500">생성 조건을 아직 만족하지 않아 리포트가 없습니다.</p>
-    {% endif %}
-  </section>
+  <section
+    id="event-timeline"
+    class="scroll-mt-24 rounded-2xl bg-white p-6 shadow-sm"
+    data-ajax-timeline-root
+    data-market="{{ current_market.lower() }}"
+    data-stock-code="{{ stock.code }}"
+    data-doc-sort="{{ doc_sort }}"
+    data-tl-source="{{ tl_source }}"
+    data-tl-window="{{ tl_window }}"
+    data-chip-active-class="{{ accent_chip_active_class }}"
+    data-chip-inactive-class="border-gray-200 bg-white text-gray-900"
+  >
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <h2 class="text-lg font-semibold text-gray-900">이벤트 타임라인</h2>
+      <span data-role="timeline-count" class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-500">{{ timeline_events|length }}</span>
+    </div>
 
-  <section class="rounded-2xl bg-white p-6 shadow-sm">
-    <h2 class="text-lg font-semibold text-gray-900">섹터/재무 정보</h2>
-    {% if stock.sector_briefs %}
-      <div class="mt-4 grid gap-3 md:grid-cols-2">
-        {% for sector in stock.sector_briefs %}
-        <article class="rounded-xl border border-gray-200 p-3">
-          <div class="flex items-center justify-between gap-2">
-            <p class="text-sm font-semibold text-gray-900">{{ sector['sector_name'] }}</p>
-            <span class="rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-500">{{ sector['sector_code'] }}</span>
-          </div>
-          <p class="mt-2 text-sm text-gray-500">{{ sector['line1'] or '섹터 요약이 아직 없습니다.' }}</p>
-          <p class="mt-1 text-xs text-gray-500">{{ sector['as_of']|fmt_dt(current_market) }}</p>
-        </article>
+    <div class="mt-3 space-y-3">
+      <div data-role="timeline-source-filters" class="flex flex-wrap items-center gap-2">
+        <p class="text-xs font-semibold text-gray-500">출처</p>
+        {% for opt in timeline_source_options %}
+        <a href="{{ opt['url'] }}" data-ajax-timeline-filter data-filter-kind="source" data-filter-value="{{ opt['value'] }}" class="rounded-full border px-3 py-1 text-xs font-medium {% if opt['is_active'] %}{{ accent_chip_active_class }}{% else %}border-gray-200 bg-white text-gray-900{% endif %}">{{ opt['label'] }}</a>
         {% endfor %}
       </div>
+      <div data-role="timeline-window-filters" class="flex flex-wrap items-center gap-2">
+        <p class="text-xs font-semibold text-gray-500">기간</p>
+        {% for opt in timeline_window_options %}
+        <a href="{{ opt['url'] }}" data-ajax-timeline-filter data-filter-kind="window" data-filter-value="{{ opt['value'] }}" class="rounded-full border px-3 py-1 text-xs font-medium {% if opt['is_active'] %}{{ accent_chip_active_class }}{% else %}border-gray-200 bg-white text-gray-900{% endif %}">{{ opt['label'] }}</a>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% if timeline_events %}
+    <ul data-role="timeline-list" class="mt-4 space-y-3">
+      {% for event in timeline_events %}
+      <li class="rounded-xl border border-gray-200 p-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-xs text-gray-500">{{ event['published_at']|fmt_dt(current_market) }}</span>
+          <span class="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-gray-500">
+            {% if event['source_kind'] == 'report' %}
+            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" d="M14 3v6h6M9 13h6M9 17h6"/>
+            </svg>
+            {% elif event['source_kind'] == 'filing' %}
+            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 21h18M5 21V8l7-4 7 4v13M9 12h6M9 16h6"/>
+            </svg>
+            {% else %}
+            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19 4H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h4l3 3 3-3h4a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" d="M7 9h10M7 13h6"/>
+            </svg>
+            {% endif %}
+            <span>{{ event['source_kind_label'] }}</span>
+          </span>
+          {% if event['show_impact'] %}
+          <span class="text-xs {{ event['impact_css'] }}">{{ event['impact_emoji'] }} {{ event['impact_text'] }}</span>
+          {% endif %}
+          {% if event['similar_count']|int > 0 %}
+          <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">유사 기사 +{{ event['similar_count'] }}</span>
+          {% endif %}
+        </div>
+
+        <p class="mt-2 text-sm text-gray-900">{{ event['one_liner'] }}</p>
+
+        {% if event['has_more_details'] %}
+        <details class="mt-3 rounded-xl border border-gray-200 p-3">
+          <summary class="cursor-pointer text-xs font-medium text-gray-500">더보기</summary>
+          <div class="mt-3 space-y-3">
+            {% if event['summary_preview_lines'] or event['summary_more_lines'] %}
+            <div>
+              <p class="text-xs font-semibold tracking-wide text-gray-500">상세 요약</p>
+              <ul class="mt-2 space-y-2">
+                {% for line in event['summary_preview_lines'] %}
+                <li class="text-sm text-gray-900">{{ line }}</li>
+                {% endfor %}
+                {% for line in event['summary_more_lines'] %}
+                <li class="text-sm text-gray-900">{{ line }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+            {% endif %}
+
+            {% if event['evidence_top'] %}
+            <div>
+              <p class="text-xs font-semibold tracking-wide text-gray-500">근거 출처</p>
+              <ul class="mt-2 space-y-2">
+                {% for ref in event['evidence_top'] %}
+                <li>
+                  <a href="{{ ref['url'] }}" target="_blank" rel="noreferrer" class="text-sm {{ accent_link_class }}">{{ ref['title'] }}</a>
+                </li>
+                {% endfor %}
+              </ul>
+              {% if event['evidence_more'] %}
+              <p class="mt-2 text-xs text-gray-500">외 {{ event['evidence_more']|length }}건</p>
+              {% endif %}
+            </div>
+            {% endif %}
+
+            <div class="flex flex-wrap gap-2">
+              {% if event['url'] %}
+              <a href="{{ event['url'] }}" target="_blank" rel="noreferrer" class="inline-flex rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-900 {{ accent_border_hover_class }}">원문 보기</a>
+              {% endif %}
+              <a href="{{ url_for('item_detail', market=current_market.lower(), item_id=event['item_id']) }}" class="inline-flex rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-900 {{ accent_border_hover_class }}">요약 상세 보기</a>
+            </div>
+          </div>
+        </details>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p data-role="timeline-empty" class="mt-4 text-sm text-gray-500">조건에 맞는 이벤트가 없습니다.</p>
+    {% endif %}
+  </section>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">섹터 및 재무 정보</h2>
+    {% if stock.sector_briefs %}
+    <div class="mt-4 grid gap-3 md:grid-cols-2">
+      {% for sector in stock.sector_briefs %}
+      <article class="rounded-xl border border-gray-200 p-3">
+        <div class="flex items-center justify-between gap-2">
+          <p class="text-sm font-semibold text-gray-900">{{ sector['sector_name'] }}</p>
+          <span class="rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-500">{{ sector['sector_code'] }}</span>
+        </div>
+        <p class="mt-2 text-sm text-gray-500">{{ sector['line1'] or '요약이 아직 없습니다.' }}</p>
+        <p class="mt-1 text-xs text-gray-500">{{ sector['as_of']|fmt_dt(current_market) }}</p>
+      </article>
+      {% endfor %}
+    </div>
     {% endif %}
 
     {% if stock.financial %}
-      <div class="mt-4 overflow-x-auto">
+    <details class="mt-4 rounded-xl border border-gray-200 p-4">
+      <summary class="cursor-pointer text-sm font-medium text-gray-900">재무 지표 더보기</summary>
+      <div class="mt-3 overflow-x-auto">
         <table class="min-w-full divide-y divide-gray-200 text-sm">
           <tbody class="divide-y divide-gray-100 text-gray-900">
             <tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">PER</th><td class="px-4 py-3">{{ stock.financial['per_display'] }}</td></tr>
             <tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">PBR</th><td class="px-4 py-3">{{ stock.financial['pbr_display'] }}</td></tr>
             <tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">EPS</th><td class="px-4 py-3">{{ stock.financial['eps_display'] }}</td></tr>
             <tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">ROE</th><td class="px-4 py-3">{{ stock.financial['roe_display'] }}</td></tr>
-            <tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Market Cap</th><td class="px-4 py-3">{{ stock.financial['market_cap_display'] }}</td></tr>
+            <tr><th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">시가총액</th><td class="px-4 py-3">{{ stock.financial['market_cap_display'] }}</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="mt-3 text-xs text-gray-500">as_of: {{ stock.financial['as_of_display'] }} / source: {{ stock.financial['source_display'] }}</p>
-    {% else %}
-      <p class="mt-4 text-sm text-gray-500">재무 데이터가 아직 수집되지 않았습니다.</p>
+    </details>
     {% endif %}
   </section>
 
-  <section class="rounded-2xl bg-white p-4 shadow-sm">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <h2 class="text-sm font-semibold text-gray-900">문서 정렬</h2>
-      <div class="inline-flex rounded-xl border border-gray-200 p-1">
-        <a
-          href="{{ url_for('stock_detail', market=current_market.lower(), code=stock.code, doc_sort='recent') }}"
-          class="rounded-lg px-3 py-1 text-xs font-medium {% if doc_sort == 'recent' %}{% if is_kr %}bg-indigo-600 text-white{% else %}bg-emerald-600 text-white{% endif %}{% else %}text-gray-500 hover:text-gray-900{% endif %}"
-        >최신순</a>
-        <a
-          href="{{ url_for('stock_detail', market=current_market.lower(), code=stock.code, doc_sort='relevance') }}"
-          class="rounded-lg px-3 py-1 text-xs font-medium {% if doc_sort == 'relevance' %}{% if is_kr %}bg-indigo-600 text-white{% else %}bg-emerald-600 text-white{% endif %}{% else %}text-gray-500 hover:text-gray-900{% endif %}"
-        >연관도순</a>
-      </div>
+  <details class="rounded-2xl bg-white p-6 shadow-sm">
+    <summary class="cursor-pointer text-lg font-semibold text-gray-900">최근 문서 보기</summary>
+    <div class="mt-4 grid gap-4 lg:grid-cols-2">
+      <article class="rounded-xl border border-gray-200 p-4">
+        <div class="flex items-center justify-between gap-3">
+          <h3 class="text-sm font-semibold text-gray-900">최근 뉴스</h3>
+          <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-500">{{ news_rows|length }}</span>
+        </div>
+        {% if news_rows %}
+        <ul class="mt-3 space-y-2">
+          {% for row in news_rows[:10] %}
+          <li>
+            <a href="{{ row['url'] }}" target="_blank" rel="noreferrer" class="text-sm {{ accent_link_class }}">{{ row['title'] }}</a>
+            <p class="mt-1 text-xs text-gray-500">{{ row['published_at']|fmt_dt(current_market) }}</p>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="mt-3 text-sm text-gray-500">뉴스가 없습니다.</p>
+        {% endif %}
+      </article>
+
+      <article class="rounded-xl border border-gray-200 p-4">
+        <div class="flex items-center justify-between gap-3">
+          <h3 class="text-sm font-semibold text-gray-900">최근 리포트</h3>
+          <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-500">{{ report_rows|length }}</span>
+        </div>
+        {% if report_rows %}
+        <ul class="mt-3 space-y-2">
+          {% for row in report_rows[:10] %}
+          <li>
+            <a href="{{ row['url'] }}" target="_blank" rel="noreferrer" class="text-sm {{ accent_link_class }}">{{ row['title'] }}</a>
+            <p class="mt-1 text-xs text-gray-500">{{ row['published_at']|fmt_dt(current_market) }}</p>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="mt-3 text-sm text-gray-500">리포트가 없습니다.</p>
+        {% endif %}
+      </article>
     </div>
-  </section>
-
-  <section class="rounded-2xl bg-white p-6 shadow-sm">
-    <div class="flex items-center justify-between gap-3">
-      <h2 class="text-lg font-semibold text-gray-900">최근 Item 요약</h2>
-      <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-500">{{ item_summaries|length }}</span>
-    </div>
-    {% if item_summaries %}
-    <ul class="mt-4 space-y-2">
-      {% for row in item_summaries %}
-      <li class="item-summary-row {% if loop.index > doc_initial_limit %}hidden extra-item-summary{% endif %} rounded-xl border border-gray-200 p-3">
-        <a href="{{ url_for('item_detail', market=current_market.lower(), item_id=row['item_id']) }}" class="block">
-          <div class="min-w-0">
-            <div class="flex items-center gap-2">
-              <p class="text-sm font-medium text-gray-900">{{ row['published_at']|fmt_dt(current_market) }}</p>
-              {% if row['show_impact'] %}
-              <span class="text-sm {{ row['impact_css'] }}">{{ row['impact_emoji'] }} {{ row['impact_text'] }}</span>
-              {% endif %}
-            </div>
-            <p class="mt-2 text-sm text-gray-900">{{ row['one_liner'] }}</p>
-            <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-              <span class="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5" title="{{ row['source'] }}">
-                {% if row['source_kind'] == 'report' %}
-                <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M14 3v6h6M9 13h6M9 17h6"/>
-                </svg>
-                {% elif row['source_kind'] == 'filing' %}
-                <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M3 21h18M5 21V8l7-4 7 4v13M9 12h6M9 16h6"/>
-                </svg>
-                {% else %}
-                <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M19 4H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h4l3 3 3-3h4a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/>
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M7 9h10M7 13h6"/>
-                </svg>
-                {% endif %}
-                <span>{{ row['source_kind_label'] }}</span>
-              </span>
-              <span>card: {{ row['card_id'] or '-' }}</span>
-            </div>
-          </div>
-        </a>
-      </li>
-      {% endfor %}
-    </ul>
-    {% if item_summaries|length > doc_initial_limit %}
-    <button id="load-more-item-summary" type="button" class="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {{ accent_border_hover_class }}">더보기</button>
-    {% endif %}
-    {% else %}
-    <p class="mt-4 text-sm text-gray-500">item 요약이 없습니다.</p>
-    {% endif %}
-  </section>
-
-  <section class="grid gap-4 lg:grid-cols-2">
-    <article class="rounded-2xl bg-white p-6 shadow-sm">
-      <div class="flex items-center justify-between gap-3">
-        <h2 class="text-lg font-semibold text-gray-900">최근 뉴스</h2>
-        <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-500">{{ news_rows|length }}</span>
-      </div>
-      {% if news_rows %}
-      <ul class="mt-4 space-y-2">
-        {% for row in news_rows %}
-        <li class="news-item {% if loop.index > doc_initial_limit %}hidden extra-news{% endif %} rounded-xl border border-gray-200 p-3">
-          <a href="{{ row['url'] }}" target="_blank" rel="noreferrer" class="text-sm font-medium {{ accent_link_class }}">{{ row['title'] }}</a>
-          <p class="mt-1 inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-gray-500" title="{{ row['source'] }}">
-            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M19 4H5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h4l3 3 3-3h4a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z"/>
-              <path stroke-linecap="round" stroke-linejoin="round" d="M7 9h10M7 13h6"/>
-            </svg>
-            <span>뉴스</span>
-            <span>·</span>
-            <span>{{ row['published_at']|fmt_dt(current_market) }}</span>
-          </p>
-          {% if doc_sort == 'relevance' %}
-          <p class="mt-1 text-xs text-gray-500">연관도 {{ '%.2f'|format(row['relevance_score'] or 0) }}</p>
-          {% endif %}
-        </li>
-        {% endfor %}
-      </ul>
-      {% if news_rows|length > doc_initial_limit %}
-      <button id="load-more-news" type="button" class="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {{ accent_border_hover_class }}">더보기</button>
-      {% endif %}
-      {% else %}
-      <p class="mt-4 text-sm text-gray-500">뉴스가 없습니다.</p>
-      {% endif %}
-    </article>
-
-    <article class="rounded-2xl bg-white p-6 shadow-sm">
-      <div class="flex items-center justify-between gap-3">
-        <h2 class="text-lg font-semibold text-gray-900">최근 리포트</h2>
-        <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-500">{{ report_rows|length }}</span>
-      </div>
-      {% if report_rows %}
-      <ul class="mt-4 space-y-2">
-        {% for row in report_rows %}
-        <li class="report-item {% if loop.index > doc_initial_limit %}hidden extra-report{% endif %} rounded-xl border border-gray-200 p-3">
-          <a href="{{ row['url'] }}" target="_blank" rel="noreferrer" class="text-sm font-medium {{ accent_link_class }}">{{ row['title'] }}</a>
-          <p class="mt-1 inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-gray-500" title="{{ row['source'] }}">
-            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
-              <path stroke-linecap="round" stroke-linejoin="round" d="M14 3v6h6M9 13h6M9 17h6"/>
-            </svg>
-            <span>리포트</span>
-            <span>·</span>
-            <span>{{ row['published_at']|fmt_dt(current_market) }}</span>
-          </p>
-          {% if doc_sort == 'relevance' %}
-          <p class="mt-1 text-xs text-gray-500">연관도 {{ '%.2f'|format(row['relevance_score'] or 0) }}</p>
-          {% endif %}
-        </li>
-        {% endfor %}
-      </ul>
-      {% if report_rows|length > doc_initial_limit %}
-      <button id="load-more-report" type="button" class="mt-3 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {{ accent_border_hover_class }}">더보기</button>
-      {% endif %}
-      {% else %}
-      <p class="mt-4 text-sm text-gray-500">리포트가 없습니다.</p>
-      {% endif %}
-    </article>
-  </section>
+  </details>
 </section>
 {% endblock %}
 
-{% block scripts %}
-<script>
-  const revealBatch = (buttonId, selector, step) => {
-    const button = document.getElementById(buttonId);
-    if (!button) return;
-    button.addEventListener("click", () => {
-      const hiddenRows = Array.from(document.querySelectorAll(selector));
-      hiddenRows.slice(0, step).forEach((el) => {
-        el.classList.remove("hidden");
-        el.classList.remove("extra-news");
-        el.classList.remove("extra-report");
-      });
-      if (document.querySelectorAll(selector).length <= step) {
-        button.classList.add("hidden");
-      }
-    });
-  };
-
-  revealBatch("load-more-news", ".extra-news", 10);
-  revealBatch("load-more-report", ".extra-report", 10);
-  revealBatch("load-more-item-summary", ".extra-item-summary", 10);
-</script>
-{% endblock %}

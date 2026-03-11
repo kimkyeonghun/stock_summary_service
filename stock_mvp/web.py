@@ -21,11 +21,14 @@ from stock_mvp.database import (
     crawler_stats_for_run,
     connect,
     get_stock,
+    get_stock_profile,
     get_stock_sectors,
     init_db,
+    list_document_entity_mappings,
     latest_documents_by_type,
     latest_financial_snapshot,
     latest_financial_snapshots,
+    latest_sector_documents,
     latest_pipeline_runs,
     list_sectors,
     list_stocks_by_market,
@@ -170,7 +173,9 @@ def create_app(settings: Settings | None = None) -> Flask:
                     )
             else:
                 feed_source_codes = [str(r["code"]) for r in market_stocks]
-            feed_items = _latest_item_feed(conn, market=market_norm, stock_codes=feed_source_codes, limit=30)
+            feed_items_all = _latest_item_feed(conn, market=market_norm, stock_codes=feed_source_codes, limit=11)
+            feed_items = feed_items_all[:10]
+            feed_has_more = len(feed_items_all) > 10
 
         rows = rows[:20]
         return render_template(
@@ -182,8 +187,9 @@ def create_app(settings: Settings | None = None) -> Flask:
             subscribed_stocks=subscribed_stocks,
             subscribed_sectors=subscribed_sectors,
             feed_items=feed_items,
-            feed_has_more=len(feed_items) > 10,
+            feed_has_more=feed_has_more,
             feed_filter_options=feed_filter_options,
+            selected_feed_stock=selected_feed_stock,
             has_subscriptions=bool(subscribed_stocks or subscribed_sectors),
         )
 
@@ -253,6 +259,79 @@ def create_app(settings: Settings | None = None) -> Flask:
             return redirect(next_url)
         return redirect(url_for("watchlist_page", market=market_norm.lower()))
 
+    @app.route("/<market>/sectors")
+    def sectors_page(market: str):
+        market_norm = _normalize_market_or_404(market)
+        _set_session_market(market_norm)
+        with connect(cfg.db_path) as conn:
+            sector_rows = _list_sectors_for_market(conn, market_norm)
+            rows: list[dict[str, Any]] = []
+            for sector in sector_rows:
+                sector_code = str(sector["sector_code"])
+                digest_row = _latest_entity_digest(conn, entity_type="sector", entity_id=sector_code, market=market_norm)
+                rows.append(
+                    {
+                        "sector_code": sector_code,
+                        "sector_name": str(sector["sector_name_ko"] or sector["sector_name_en"]),
+                        "line1": _digest_line1(digest_row),
+                        "as_of": str(digest_row["digest_date"] or "") if digest_row else "",
+                    }
+                )
+        return render_template(
+            "sectors.html",
+            current_market=market_norm,
+            nav_links=_nav_links(market_norm),
+            active_page="sectors",
+            sectors=rows,
+        )
+
+    @app.route("/<market>/sector/<sector_code>")
+    def sector_detail_page(market: str, sector_code: str):
+        market_norm = _normalize_market_or_404(market)
+        _set_session_market(market_norm)
+        sector_code_norm = sector_code.strip().upper()
+        with connect(cfg.db_path) as conn:
+            sector_rows = _list_sectors_for_market(conn, market_norm)
+            target = next((r for r in sector_rows if str(r["sector_code"]).upper() == sector_code_norm), None)
+            if target is None:
+                abort(404)
+            digest_row = _latest_entity_digest(conn, entity_type="sector", entity_id=sector_code_norm, market=market_norm)
+            digest_view = _build_digest_view(conn, digest_row)
+            report_view = _latest_agent_report(conn, entity_type="sector", entity_id=sector_code_norm, market=market_norm)
+            top_stocks = _sector_top_stocks(conn, market=market_norm, sector_code=sector_code_norm, limit=12)
+            sector_doc_rows = latest_sector_documents(conn, sector_code=sector_code_norm, lookback_days=30, limit=12)
+            sector_docs: list[dict[str, Any]] = []
+            for row in sector_doc_rows:
+                raw = dict(row)
+                source_kind = _classify_source_kind(
+                    doc_type=str(raw.get("doc_type") or ""),
+                    source=str(raw.get("source") or ""),
+                )
+                sector_docs.append(
+                    {
+                        "id": int(raw["id"]),
+                        "title": str(raw["title"]),
+                        "url": str(raw["url"]),
+                        "published_at": str(raw.get("published_at") or ""),
+                        "source_kind_label": _source_kind_label(source_kind),
+                    }
+                )
+        return render_template(
+            "sector_detail.html",
+            current_market=market_norm,
+            nav_links=_nav_links(market_norm),
+            active_page="sectors",
+            sector={
+                "sector_code": sector_code_norm,
+                "sector_name": str(target["sector_name_ko"] or target["sector_name_en"]),
+            },
+            digest=digest_row,
+            digest_view=digest_view,
+            agent_report=report_view,
+            top_stocks=top_stocks,
+            sector_docs=sector_docs,
+        )
+
     @app.route("/stock/<code>")
     def stock_detail_redirect(code: str):
         code_norm = code.strip().upper()
@@ -271,6 +350,8 @@ def create_app(settings: Settings | None = None) -> Flask:
         doc_sort = str(request.args.get("doc_sort", "recent") or "recent").strip().lower()
         if doc_sort not in {"recent", "relevance"}:
             doc_sort = "recent"
+        tl_source = _normalize_timeline_source(request.args.get("tl_source"))
+        tl_window = _normalize_timeline_window(request.args.get("tl_window"))
         with connect(cfg.db_path) as conn:
             stock_row = get_stock(conn, code_norm)
             if stock_row is None:
@@ -279,15 +360,38 @@ def create_app(settings: Settings | None = None) -> Flask:
             if stock_market != market_norm:
                 return redirect(url_for("stock_detail", market=stock_market.lower(), code=code_norm))
             sector_rows = get_stock_sectors(conn, code_norm)
+            profile_row = get_stock_profile(conn, code_norm)
             financial_row = latest_financial_snapshot(conn, code_norm)
             digest_row = _latest_entity_digest(conn, entity_type="ticker", entity_id=code_norm, market=market_norm)
             digest_view = _build_digest_view(conn, digest_row)
             report_view = _latest_agent_report(conn, entity_type="ticker", entity_id=code_norm, market=market_norm)
-            item_summary_rows = _latest_item_summaries(conn, code_norm, limit=50)
+            item_summary_rows = _latest_item_summaries(conn, code_norm, limit=120)
             news_rows_raw = latest_documents_by_type(conn, code_norm, doc_type="news", limit=240, order_by=doc_sort)
             report_rows_raw = latest_documents_by_type(conn, code_norm, doc_type="report", limit=180, order_by=doc_sort)
             news_rows = _curate_document_rows(news_rows_raw, doc_type="news", limit=100)
             report_rows = _curate_document_rows(report_rows_raw, doc_type="report", limit=100)
+            timeline_events = _build_timeline_events(
+                item_summary_rows,
+                market=market_norm,
+                source_filter=tl_source,
+                window_filter=tl_window,
+                limit=60,
+            )
+            timeline_source_options = _timeline_source_options(
+                market=market_norm,
+                code=code_norm,
+                selected_source=tl_source,
+                selected_window=tl_window,
+                doc_sort=doc_sort,
+            )
+            timeline_window_options = _timeline_window_options(
+                market=market_norm,
+                code=code_norm,
+                selected_source=tl_source,
+                selected_window=tl_window,
+                doc_sort=doc_sort,
+            )
+            change_snapshot = _build_change_snapshot(digest_view=digest_view, timeline_rows=item_summary_rows)
             sector_briefs: list[dict[str, str]] = []
             for sector_row in sector_rows:
                 sector_code = str(sector_row["sector_code"])
@@ -302,12 +406,14 @@ def create_app(settings: Settings | None = None) -> Flask:
                 )
 
         financial = _build_financial_view(dict(financial_row)) if financial_row else None
+        profile = _build_stock_profile_view(dict(profile_row)) if profile_row else None
         stock = {
             "code": stock_row["code"],
             "name": stock_row["name"],
             "queries": json.loads(stock_row["queries_json"]),
             "sectors": [str(r["sector_name_ko"] or r["sector_name_en"]) for r in sector_rows],
             "sector_briefs": sector_briefs,
+            "profile": profile,
             "financial": financial,
         }
         subscribed = code_norm in set(_get_watchlist_items("stocks", market_norm))
@@ -319,8 +425,14 @@ def create_app(settings: Settings | None = None) -> Flask:
             stock=stock,
             digest=digest_row,
             digest_view=digest_view,
+            change_snapshot=change_snapshot,
             agent_report=report_view,
-            item_summaries=item_summary_rows,
+            item_summaries=item_summary_rows[:50],
+            timeline_events=timeline_events,
+            timeline_source_options=timeline_source_options,
+            timeline_window_options=timeline_window_options,
+            tl_source=tl_source,
+            tl_window=tl_window,
             news_rows=news_rows,
             report_rows=report_rows,
             doc_sort=doc_sort,
@@ -446,6 +558,178 @@ def create_app(settings: Settings | None = None) -> Flask:
                 market=market,
             )
         return jsonify({"digest": digest_row, "digest_view": digest_view, "report": report_view})
+
+    @app.route("/ops/mapping-debug")
+    def ops_mapping_debug():
+        market = request.args.get("market", "").strip().upper() or None
+        stock_code = request.args.get("stock_code", "").strip().upper() or None
+        try:
+            limit = max(1, min(int(str(request.args.get("limit") or "120")), 500))
+        except ValueError:
+            limit = 120
+        with connect(cfg.db_path) as conn:
+            rows = list_document_entity_mappings(
+                conn,
+                market=market,
+                stock_code=stock_code,
+                limit=limit,
+            )
+        payload: list[dict[str, Any]] = []
+        for row in rows:
+            raw = dict(row)
+            raw["reason"] = _safe_json_loads(raw.get("reason_json"), default={})
+            payload.append(raw)
+        return jsonify(payload)
+
+    @app.route("/api/<market>/stock/<code>/timeline")
+    def api_stock_timeline(market: str, code: str):
+        market_norm = _normalize_market_or_404(market)
+        code_norm = code.strip().upper()
+        tl_source = _normalize_timeline_source(request.args.get("tl_source"))
+        tl_window = _normalize_timeline_window(request.args.get("tl_window"))
+        doc_sort = str(request.args.get("doc_sort", "recent") or "recent").strip().lower()
+        if doc_sort not in {"recent", "relevance"}:
+            doc_sort = "recent"
+
+        with connect(cfg.db_path) as conn:
+            stock_row = get_stock(conn, code_norm)
+            if stock_row is None:
+                return jsonify({"ok": False, "code": "NOT_FOUND", "message": "stock not found"}), 404
+            stock_market = str(stock_row["market"]).upper()
+            if stock_market != market_norm:
+                return jsonify({"ok": False, "code": "MARKET_MISMATCH", "message": "market mismatch"}), 400
+            item_summary_rows = _latest_item_summaries(conn, code_norm, limit=120)
+            timeline_events = _build_timeline_events(
+                item_summary_rows,
+                market=market_norm,
+                source_filter=tl_source,
+                window_filter=tl_window,
+                limit=60,
+            )
+            timeline_source_options = _timeline_source_options(
+                market=market_norm,
+                code=code_norm,
+                selected_source=tl_source,
+                selected_window=tl_window,
+                doc_sort=doc_sort,
+            )
+            timeline_window_options = _timeline_window_options(
+                market=market_norm,
+                code=code_norm,
+                selected_source=tl_source,
+                selected_window=tl_window,
+                doc_sort=doc_sort,
+            )
+        return jsonify(
+            {
+                "ok": True,
+                "events": timeline_events,
+                "filters": {
+                    "source": timeline_source_options,
+                    "window": timeline_window_options,
+                    "selected_source": tl_source,
+                    "selected_window": tl_window,
+                },
+                "meta": {
+                    "total_count": len(timeline_events),
+                    "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+                },
+            }
+        )
+
+    @app.route("/api/<market>/feed")
+    def api_feed(market: str):
+        market_norm = _normalize_market_or_404(market)
+        feed_stock_param = str(request.args.get("feed_stock") or "").strip().upper()
+        try:
+            limit = max(1, min(int(str(request.args.get("limit") or "10")), 50))
+        except ValueError:
+            limit = 10
+        try:
+            offset = max(0, min(int(str(request.args.get("offset") or "0")), 500))
+        except ValueError:
+            offset = 0
+
+        with connect(cfg.db_path) as conn:
+            payload = _build_feed_payload(
+                conn,
+                market=market_norm,
+                feed_stock=feed_stock_param,
+                limit=limit,
+                offset=offset,
+            )
+        return jsonify(payload)
+
+    @app.route("/api/<market>/watchlist", methods=["POST"])
+    def api_watchlist_toggle(market: str):
+        market_norm = _normalize_market_or_404(market)
+        payload = request.get_json(silent=True) or {}
+        kind_raw = str(payload.get("kind") or "").strip().lower()
+        value = str(payload.get("value") or "").strip().upper()
+        desired = payload.get("desired")
+
+        if kind_raw not in {"stock", "sector"}:
+            return jsonify({"ok": False, "code": "INVALID_KIND", "message": "kind must be stock or sector"}), 400
+        if not value:
+            return jsonify({"ok": False, "code": "INVALID_VALUE", "message": "value is required"}), 400
+        if not isinstance(desired, bool):
+            return jsonify({"ok": False, "code": "INVALID_DESIRED", "message": "desired must be boolean"}), 400
+
+        kind = "stocks" if kind_raw == "stock" else "sectors"
+        with connect(cfg.db_path) as conn:
+            if kind_raw == "stock":
+                stock_row = get_stock(conn, value)
+                if stock_row is None:
+                    return jsonify({"ok": False, "code": "NOT_FOUND", "message": "stock not found"}), 404
+                if str(stock_row["market"]).upper() != market_norm:
+                    return jsonify({"ok": False, "code": "MARKET_MISMATCH", "message": "market mismatch"}), 400
+            else:
+                sector_rows = _list_sectors_for_market(conn, market_norm)
+                sector_codes = {str(r["sector_code"]).upper() for r in sector_rows}
+                if value not in sector_codes:
+                    return jsonify({"ok": False, "code": "NOT_FOUND", "message": "sector not found"}), 404
+
+        subscribed = _set_watchlist_item(kind, market_norm, value, desired)
+        stock_count = len(_get_watchlist_items("stocks", market_norm))
+        sector_count = len(_get_watchlist_items("sectors", market_norm))
+        return jsonify(
+            {
+                "ok": True,
+                "kind": kind_raw,
+                "value": value,
+                "subscribed": bool(subscribed),
+                "counts": {"stocks": stock_count, "sectors": sector_count},
+            }
+        )
+
+    @app.route("/api/<market>/backtest/basket")
+    def api_backtest_basket_get(market: str):
+        market_norm = _normalize_market_or_404(market)
+        basket = _get_backtest_basket(market_norm)
+        return jsonify({"ok": True, "market": market_norm, "items": basket, "count": len(basket)})
+
+    @app.route("/api/<market>/backtest/basket", methods=["POST"])
+    def api_backtest_basket_add(market: str):
+        market_norm = _normalize_market_or_404(market)
+        payload = request.get_json(silent=True) or {}
+        code = str(payload.get("code") or payload.get("value") or "").strip().upper()
+        if not code:
+            return jsonify({"ok": False, "code": "INVALID_CODE", "message": "code is required"}), 400
+        with connect(cfg.db_path) as conn:
+            stock_row = get_stock(conn, code)
+            if stock_row is None:
+                return jsonify({"ok": False, "code": "NOT_FOUND", "message": "stock not found"}), 404
+            if str(stock_row["market"]).upper() != market_norm:
+                return jsonify({"ok": False, "code": "MARKET_MISMATCH", "message": "market mismatch"}), 400
+        basket = _set_backtest_basket_item(market_norm, code, desired=True)
+        return jsonify({"ok": True, "market": market_norm, "items": basket, "count": len(basket), "code": code})
+
+    @app.route("/api/<market>/backtest/basket/<code>", methods=["DELETE"])
+    def api_backtest_basket_remove(market: str, code: str):
+        market_norm = _normalize_market_or_404(market)
+        code_norm = str(code or "").strip().upper()
+        basket = _set_backtest_basket_item(market_norm, code_norm, desired=False)
+        return jsonify({"ok": True, "market": market_norm, "items": basket, "count": len(basket), "code": code_norm})
 
     @app.route("/api/backtest/presets")
     def api_backtest_presets():
@@ -671,6 +955,7 @@ def _nav_links(current_market: str) -> dict[str, str]:
     return {
         "dashboard": url_for("dashboard", market=market.lower()),
         "watchlist": url_for("watchlist_page", market=market.lower()),
+        "sectors": url_for("sectors_page", market=market.lower()),
         "backtest": url_for("backtest_page", market=market.lower()),
         "toggle_kr": url_for("dashboard", market="kr"),
         "toggle_us": url_for("dashboard", market="us"),
@@ -742,6 +1027,54 @@ def _toggle_watchlist_item(kind: str, market: str, value: str) -> None:
     session.modified = True
 
 
+def _set_watchlist_item(kind: str, market: str, value: str, desired: bool) -> bool:
+    market_norm = _normalize_market_or_404(market)
+    token = str(value or "").strip().upper()
+    if not token or kind not in {"stocks", "sectors"}:
+        return False
+    watchlist = _session_watchlist()
+    current = [x for x in watchlist[kind][market_norm] if x != token]
+    if desired:
+        current.append(token)
+    watchlist[kind][market_norm] = current
+    session["watchlist"] = watchlist
+    session.modified = True
+    return token in current
+
+
+def _session_backtest_basket() -> dict[str, list[str]]:
+    raw = session.get("backtest_basket")
+    if not isinstance(raw, dict):
+        raw = {}
+    normalized = {
+        "KR": _normalize_watchlist_values(raw.get("KR")),
+        "US": _normalize_watchlist_values(raw.get("US")),
+    }
+    session["backtest_basket"] = normalized
+    session.modified = True
+    return normalized
+
+
+def _get_backtest_basket(market: str) -> list[str]:
+    market_norm = _normalize_market_or_404(market)
+    return list(_session_backtest_basket()[market_norm])
+
+
+def _set_backtest_basket_item(market: str, code: str, *, desired: bool) -> list[str]:
+    market_norm = _normalize_market_or_404(market)
+    token = str(code or "").strip().upper()
+    if not token:
+        return _get_backtest_basket(market_norm)
+    basket = _session_backtest_basket()
+    items = [x for x in basket[market_norm] if x != token]
+    if desired:
+        items.append(token)
+    basket[market_norm] = items
+    session["backtest_basket"] = basket
+    session.modified = True
+    return list(items)
+
+
 def _set_session_market(market: str) -> None:
     session["market"] = _normalize_market_or_404(market)
     session.modified = True
@@ -782,6 +1115,39 @@ def _list_sectors_for_market(conn, market: str) -> list[Any]:
     if market_norm == "KR":
         return list_sectors(conn, active_only=True)
     return []
+
+
+def _sector_top_stocks(conn, *, market: str, sector_code: str, limit: int = 12) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT
+          s.code,
+          s.name,
+          s.rank
+        FROM stock_sector_map m
+        JOIN stocks s ON s.code = m.stock_code
+        WHERE s.is_active = 1
+          AND lower(s.market) = lower(?)
+          AND m.sector_code = ?
+        ORDER BY COALESCE(s.rank, 99999), s.code
+        LIMIT ?
+        """,
+        (market, sector_code, max(1, limit)),
+    ).fetchall()
+    ticker_digests = _latest_ticker_digests_for_market(conn, market)
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        code = str(row["code"])
+        digest = ticker_digests.get(code)
+        output.append(
+            {
+                "stock_code": code,
+                "stock_name": str(row["name"]),
+                "line1": _digest_line1(digest),
+                "as_of": str(digest["digest_date"] or "") if digest else "",
+            }
+        )
+    return output
 
 
 def _latest_ticker_digests_for_market(conn, market: str) -> dict[str, dict[str, Any]]:
@@ -891,12 +1257,21 @@ def _latest_item_feed(conn, *, market: str, stock_codes: list[str], limit: int) 
           d.source,
           COALESCE(d.published_at, d.collected_at) AS published_at,
           d.relevance_score,
-          d.matched_alias
+          d.matched_alias,
+          COALESCE(m.score, 0) AS mapping_score
         FROM item_summaries i
         JOIN documents d ON d.id = i.item_id
         JOIN stocks s ON s.code = d.stock_code
+        LEFT JOIN document_entity_map m ON m.document_id = d.id AND m.entity_type = 'ticker'
         WHERE lower(s.market) = lower(?)
           AND d.stock_code IN ({placeholders})
+          AND (
+            m.document_id IS NULL
+            OR (
+              upper(COALESCE(m.entity_id, '')) = upper(d.stock_code)
+              AND COALESCE(m.score, 0) >= 0.55
+            )
+          )
         ORDER BY datetime(COALESCE(d.published_at, d.collected_at)) DESC, i.item_id DESC
         LIMIT ?
         """,
@@ -939,6 +1314,75 @@ def _latest_item_feed(conn, *, market: str, stock_codes: list[str], limit: int) 
     return output
 
 
+def _build_feed_payload(
+    conn,
+    *,
+    market: str,
+    feed_stock: str,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    market_norm = _normalize_market_or_404(market)
+    selected_feed_stock = str(feed_stock or "").strip().upper()
+    market_stocks = list_stocks_by_market(conn, market_norm, active_only=True)
+    market_codes = {str(r["code"]) for r in market_stocks}
+
+    subscribed_stock_codes = [
+        c for c in _get_watchlist_items("stocks", market_norm) if c in market_codes
+    ]
+    subscribed_name_by_code = {
+        str(r["code"]): str(r["name"]) for r in market_stocks if str(r["code"]) in subscribed_stock_codes
+    }
+    if selected_feed_stock not in subscribed_name_by_code:
+        selected_feed_stock = ""
+
+    feed_filter_options: list[dict[str, Any]] = []
+    if subscribed_stock_codes:
+        feed_filter_options.append(
+            {
+                "code": "",
+                "label": "전체",
+                "is_active": not selected_feed_stock,
+                "url": url_for("dashboard", market=market_norm.lower()),
+            }
+        )
+        for code in subscribed_stock_codes:
+            feed_filter_options.append(
+                {
+                    "code": code,
+                    "label": f"{subscribed_name_by_code.get(code, code)} ({code})",
+                    "is_active": selected_feed_stock == code,
+                    "url": url_for("dashboard", market=market_norm.lower(), feed_stock=code),
+                }
+            )
+        feed_source_codes = [selected_feed_stock] if selected_feed_stock else list(subscribed_stock_codes)
+    else:
+        feed_source_codes = [str(r["code"]) for r in market_stocks]
+
+    fetch_count = max(1, offset + limit + 1)
+    all_items = _latest_item_feed(conn, market=market_norm, stock_codes=feed_source_codes, limit=fetch_count)
+    sliced = all_items[offset : offset + limit]
+    has_more = len(all_items) > (offset + len(sliced))
+    next_offset = (offset + len(sliced)) if has_more else None
+
+    return {
+        "ok": True,
+        "items": sliced,
+        "filters": {
+            "selected_feed_stock": selected_feed_stock,
+            "options": feed_filter_options,
+        },
+        "meta": {
+            "offset": offset,
+            "limit": limit,
+            "has_more": has_more,
+            "next_offset": next_offset,
+            "count": len(sliced),
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        },
+    }
+
+
 def _latest_item_summaries(conn, stock_code: str, *, limit: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
@@ -957,11 +1401,18 @@ def _latest_item_summaries(conn, stock_code: str, *, limit: int) -> list[dict[st
           COALESCE(d.published_at, d.collected_at) AS published_at,
           d.relevance_score,
           d.matched_alias,
-          e.card_id
+          COALESCE(m.score, 0) AS mapping_score
         FROM item_summaries i
         JOIN documents d ON d.id = i.item_id
-        LEFT JOIN evidence_cards e ON e.item_id = i.item_id
+        LEFT JOIN document_entity_map m ON m.document_id = d.id AND m.entity_type = 'ticker'
         WHERE d.stock_code = ?
+          AND (
+            m.document_id IS NULL
+            OR (
+              upper(COALESCE(m.entity_id, '')) = upper(d.stock_code)
+              AND COALESCE(m.score, 0) >= 0.55
+            )
+          )
         ORDER BY datetime(COALESCE(d.published_at, d.collected_at)) DESC, i.item_id DESC
         LIMIT ?
         """,
@@ -970,9 +1421,16 @@ def _latest_item_summaries(conn, stock_code: str, *, limit: int) -> list[dict[st
     curated_rows = _curate_item_summary_rows(rows, limit=limit)
     result: list[dict[str, Any]] = []
     for raw in curated_rows:
-        raw["summary_lines"] = [compact_text(x) for x in str(raw.get("short_summary") or "").splitlines() if compact_text(x)]
-        raw["detail_bullets"] = _safe_json_loads(raw.get("detail_bullets_json"), default=[])
-        raw["related_refs"] = _safe_json_loads(raw.get("related_refs_json"), default=[])
+        summary_lines = [compact_text(x) for x in str(raw.get("short_summary") or "").splitlines() if compact_text(x)]
+        detail_bullets = _safe_json_loads(raw.get("detail_bullets_json"), default=[])
+        related_refs = _safe_json_loads(raw.get("related_refs_json"), default=[])
+        raw["summary_lines"] = summary_lines
+        raw["summary_preview_lines"] = summary_lines[:2]
+        raw["summary_has_more"] = len(summary_lines) > len(raw["summary_preview_lines"])
+        raw["detail_bullets"] = detail_bullets
+        raw["detail_preview_bullets"] = detail_bullets[:2] if isinstance(detail_bullets, list) else []
+        raw["detail_has_more"] = len(detail_bullets) > len(raw["detail_preview_bullets"]) if isinstance(detail_bullets, list) else False
+        raw["related_refs"] = related_refs
         raw.update(_impact_view(str(raw.get("impact_label") or "neutral")))
         raw["source_kind"] = _classify_source_kind(
             doc_type=str(raw.get("doc_type") or ""),
@@ -980,6 +1438,8 @@ def _latest_item_summaries(conn, stock_code: str, *, limit: int) -> list[dict[st
         )
         raw["source_kind_label"] = _source_kind_label(str(raw["source_kind"]))
         raw["one_liner"] = _item_one_liner(raw)
+        raw["similar_count"] = int(raw.get("_similar_count") or 0)
+        raw["has_more_details"] = bool(raw["detail_has_more"] or raw["related_refs"])
         result.append(raw)
     return result
 
@@ -1014,9 +1474,16 @@ def _item_detail_payload(conn, *, item_id: int) -> dict[str, Any] | None:
     if row is None:
         return None
     payload = dict(row)
-    payload["summary_lines"] = [compact_text(x) for x in str(payload.get("short_summary") or "").splitlines() if compact_text(x)]
-    payload["detail_bullets"] = _safe_json_loads(payload.get("detail_bullets_json"), default=[])
-    payload["related_refs"] = _safe_json_loads(payload.get("related_refs_json"), default=[])
+    summary_lines = [compact_text(x) for x in str(payload.get("short_summary") or "").splitlines() if compact_text(x)]
+    detail_bullets = _safe_json_loads(payload.get("detail_bullets_json"), default=[])
+    related_refs = _safe_json_loads(payload.get("related_refs_json"), default=[])
+    payload["summary_lines"] = summary_lines
+    payload["summary_preview_lines"] = summary_lines[:2]
+    payload["summary_has_more"] = len(summary_lines) > len(payload["summary_preview_lines"])
+    payload["detail_bullets"] = detail_bullets
+    payload["detail_preview_bullets"] = detail_bullets[:2] if isinstance(detail_bullets, list) else []
+    payload["detail_has_more"] = len(detail_bullets) > len(payload["detail_preview_bullets"]) if isinstance(detail_bullets, list) else False
+    payload["related_refs"] = related_refs
     payload.update(_impact_view(str(payload.get("impact_label") or "neutral")))
     payload["source_kind"] = _classify_source_kind(
         doc_type=str(payload.get("doc_type") or ""),
@@ -1024,6 +1491,7 @@ def _item_detail_payload(conn, *, item_id: int) -> dict[str, Any] | None:
     )
     payload["source_kind_label"] = _source_kind_label(str(payload["source_kind"]))
     payload["one_liner"] = _item_one_liner(payload)
+    payload["has_more_details"] = bool(payload["detail_has_more"] or payload["related_refs"] or payload["summary_has_more"])
     return payload
 
 
@@ -1645,13 +2113,16 @@ def _build_digest_view(conn, digest_row: dict[str, Any] | None) -> dict[str, Any
     change_lines = _split_non_empty_lines(str(digest_row.get("change_3") or ""))
     question_lines = _split_non_empty_lines(str(digest_row.get("open_questions") or ""))
     refs = _safe_json_loads(digest_row.get("refs_json"), default=[])
-    ref_sources = _resolve_digest_ref_sources(conn, refs)
+    ref_sources_raw = _resolve_digest_ref_sources(conn, refs)
+    ref_sources = _dedupe_sort_ref_sources(ref_sources_raw)
+    ref_visible = ref_sources[:5]
     return {
         "summary_lines": summary_lines,
         "change_lines": change_lines,
         "question_lines": question_lines,
         "refs": refs,
-        "ref_sources": ref_sources,
+        "ref_sources": ref_visible,
+        "ref_extra_count": max(0, len(ref_sources) - len(ref_visible)),
     }
 
 
@@ -1692,15 +2163,264 @@ def _resolve_digest_ref_sources(conn, refs: list[dict[str, Any]]) -> list[dict[s
         output.append(
             {
                 "alias": str(ref.get("alias") or ""),
-                "card_id": card_id,
                 "item_id": source.get("item_id"),
-                "title": str(source.get("title") or source.get("source_name") or card_id),
+                "title": str(source.get("title") or source.get("source_name") or ""),
                 "url": str(source.get("document_url") or source.get("evidence_url") or ""),
                 "source": str(source.get("document_source") or source.get("source_name") or ""),
                 "published_at": str(source.get("document_published_at") or source.get("evidence_published_at") or ""),
             }
         )
     return output
+
+
+def _dedupe_sort_ref_sources(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        url = compact_text(str(row.get("url") or ""))
+        title = compact_text(str(row.get("title") or ""))
+        source = compact_text(str(row.get("source") or ""))
+        published_at = compact_text(str(row.get("published_at") or ""))
+        if url:
+            key = f"url:{normalize_url(url)}"
+        else:
+            key = f"title:{title.lower()}|source:{source.lower()}|ts:{published_at[:10]}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(
+            {
+                "alias": str(row.get("alias") or ""),
+                "item_id": row.get("item_id"),
+                "title": title,
+                "url": url,
+                "source": source,
+                "published_at": published_at,
+            }
+        )
+    deduped.sort(
+        key=lambda r: (
+            _event_timestamp(str(r.get("published_at") or "")),
+            int(r.get("item_id") or 0),
+        ),
+        reverse=True,
+    )
+    return deduped
+
+
+def _normalize_timeline_source(value: Any) -> str:
+    token = str(value or "all").strip().lower()
+    if token not in {"all", "news", "report", "filing"}:
+        return "all"
+    return token
+
+
+def _normalize_timeline_window(value: Any) -> str:
+    token = str(value or "14d").strip().lower()
+    if token not in {"7d", "14d", "30d", "all"}:
+        return "14d"
+    return token
+
+
+def _timeline_source_options(
+    *,
+    market: str,
+    code: str,
+    selected_source: str,
+    selected_window: str,
+    doc_sort: str,
+) -> list[dict[str, str]]:
+    options = [
+        ("all", "전체"),
+        ("news", "뉴스"),
+        ("report", "리포트"),
+        ("filing", "공시"),
+    ]
+    result: list[dict[str, str]] = []
+    for value, label in options:
+        result.append(
+            {
+                "value": value,
+                "label": label,
+                "is_active": "1" if value == selected_source else "",
+                "url": url_for(
+                    "stock_detail",
+                    market=market.lower(),
+                    code=code,
+                    doc_sort=doc_sort,
+                    tl_source=value,
+                    tl_window=selected_window,
+                    _anchor="event-timeline",
+                ),
+            }
+        )
+    return result
+
+
+def _timeline_window_options(
+    *,
+    market: str,
+    code: str,
+    selected_source: str,
+    selected_window: str,
+    doc_sort: str,
+) -> list[dict[str, str]]:
+    options = [
+        ("7d", "7일"),
+        ("14d", "14일"),
+        ("30d", "30일"),
+        ("all", "전체"),
+    ]
+    result: list[dict[str, str]] = []
+    for value, label in options:
+        result.append(
+            {
+                "value": value,
+                "label": label,
+                "is_active": "1" if value == selected_window else "",
+                "url": url_for(
+                    "stock_detail",
+                    market=market.lower(),
+                    code=code,
+                    doc_sort=doc_sort,
+                    tl_source=selected_source,
+                    tl_window=value,
+                    _anchor="event-timeline",
+                ),
+            }
+        )
+    return result
+
+
+def _build_timeline_events(
+    rows: list[dict[str, Any]],
+    *,
+    market: str,
+    source_filter: str,
+    window_filter: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    now_ts = datetime.now(tz=timezone.utc).timestamp()
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        source_kind = str(row.get("source_kind") or "").strip().lower()
+        if source_filter != "all" and source_kind != source_filter:
+            continue
+        published_at = str(row.get("published_at") or "")
+        if window_filter != "all":
+            event_ts = _event_timestamp(published_at)
+            if event_ts <= 0:
+                continue
+            days = 7 if window_filter == "7d" else 14 if window_filter == "14d" else 30
+            if now_ts - event_ts > days * 24 * 3600:
+                continue
+
+        detail_preview = row.get("detail_preview_bullets") or []
+        if not isinstance(detail_preview, list):
+            detail_preview = []
+        detail_full = row.get("detail_bullets") or []
+        if not isinstance(detail_full, list):
+            detail_full = []
+        related_refs = row.get("related_refs") or []
+        if not isinstance(related_refs, list):
+            related_refs = []
+        evidence_top = related_refs[:2]
+        evidence_more = related_refs[2:]
+        has_more_details = bool(
+            row.get("has_more_details")
+            or len(detail_full) > len(detail_preview)
+            or evidence_more
+        )
+        filtered.append(
+            {
+                "item_id": int(row.get("item_id") or 0),
+                "published_at": published_at,
+                "source_kind": row.get("source_kind") or "news",
+                "source_kind_label": row.get("source_kind_label") or "뉴스",
+                "source_title": str(row.get("source") or ""),
+                "impact_label": row.get("impact_label") or "neutral",
+                "impact_emoji": row.get("impact_emoji") or "",
+                "impact_text": row.get("impact_text") or "",
+                "impact_css": row.get("impact_css") or "text-gray-500",
+                "show_impact": row.get("show_impact") or "",
+                "one_liner": str(row.get("one_liner") or ""),
+                "summary_preview_lines": list(detail_preview),
+                "summary_more_lines": list(detail_full[len(detail_preview):]),
+                "has_more_details": has_more_details,
+                "url": str(row.get("url") or ""),
+                "similar_count": int(row.get("similar_count") or 0),
+                "evidence_top": evidence_top,
+                "evidence_more": evidence_more,
+            }
+        )
+    filtered.sort(
+        key=lambda r: (
+            _event_timestamp(str(r.get("published_at") or "")),
+            int(r.get("item_id") or 0),
+        ),
+        reverse=True,
+    )
+    return filtered[: max(1, limit)]
+
+
+def _build_change_snapshot(*, digest_view: dict[str, Any] | None, timeline_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    d1_lines: list[str] = []
+    if digest_view:
+        raw = digest_view.get("change_lines") or []
+        if isinstance(raw, list):
+            d1_lines = [compact_text(str(x)) for x in raw if compact_text(str(x))]
+    d7_lines = _build_d7_change_lines(timeline_rows)
+    return {
+        "d1_lines": d1_lines,
+        "d1_preview_lines": d1_lines[:1],
+        "d1_has_more": len(d1_lines) > 1,
+        "d7_lines": d7_lines,
+        "d7_preview_lines": d7_lines[:1],
+        "d7_has_more": len(d7_lines) > 1,
+    }
+
+
+def _build_d7_change_lines(rows: list[dict[str, Any]]) -> list[str]:
+    now_ts = datetime.now(tz=timezone.utc).timestamp()
+    recent_start = now_ts - (7 * 24 * 3600)
+    prev_start = now_ts - (14 * 24 * 3600)
+
+    recent_rows: list[dict[str, Any]] = []
+    prev_rows: list[dict[str, Any]] = []
+    for row in rows:
+        ts = _event_timestamp(str(row.get("published_at") or ""))
+        if ts <= 0:
+            continue
+        if ts >= recent_start:
+            recent_rows.append(row)
+        elif ts >= prev_start:
+            prev_rows.append(row)
+
+    lines: list[str] = []
+    recent_cnt = len(recent_rows)
+    prev_cnt = len(prev_rows)
+    if recent_cnt > 0 or prev_cnt > 0:
+        diff = recent_cnt - prev_cnt
+        delta = f"{diff:+d}" if diff else "0"
+        lines.append(f"+ 최근 7일 이벤트 {recent_cnt}건 (직전 7일 {prev_cnt}건, 변화 {delta})")
+
+    def _count_kind(bucket: list[dict[str, Any]], kind: str) -> int:
+        return sum(1 for r in bucket if str(r.get("source_kind") or "").strip().lower() == kind)
+
+    recent_report = _count_kind(recent_rows, "report")
+    prev_report = _count_kind(prev_rows, "report")
+    if recent_report or prev_report:
+        lines.append(f"+ 리포트 {recent_report}건 (직전 7일 {prev_report}건)")
+
+    recent_bad = sum(1 for r in recent_rows if str(r.get("impact_label") or "") == "negative")
+    prev_bad = sum(1 for r in prev_rows if str(r.get("impact_label") or "") == "negative")
+    if recent_bad or prev_bad:
+        lines.append(f"− 부정 신호 {recent_bad}건 (직전 7일 {prev_bad}건)")
+
+    cleaned = [compact_text(x) for x in lines if compact_text(x)]
+    if not cleaned:
+        return ["유의미한 변화 없음"]
+    return cleaned[:3]
 
 
 def _digest_line1(digest_row: dict[str, Any] | None) -> str:
@@ -1884,6 +2604,44 @@ def _build_financial_view(raw: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _build_stock_profile_view(raw: dict[str, Any]) -> dict[str, Any] | None:
+    row = dict(raw or {})
+    text = str(row.get("description_ko") or "").strip()
+    if not text:
+        return None
+    lines = _split_non_empty_lines(text)
+    if not lines:
+        lines = _split_profile_sentences(text)
+    if not lines:
+        return None
+    source = str(row.get("source") or "").strip().lower()
+    source_url = compact_text(str(row.get("source_url") or ""))
+    return {
+        "lines": lines[:5],
+        "source_label": _profile_source_label(source),
+        "source_url": source_url if source_url.startswith("http") else "",
+        "updated_at": str(row.get("updated_at") or ""),
+    }
+
+
+def _profile_source_label(source: str) -> str:
+    key = source.strip().lower()
+    if key == "manual":
+        return "수동 입력"
+    if key == "naver_profile":
+        return "네이버 금융"
+    if key == "yahoo_profile":
+        return "Yahoo Finance"
+    if key == "derived_docs":
+        return "뉴스/리포트 기반"
+    return "내부 프로필"
+
+
+def _split_profile_sentences(text: str) -> list[str]:
+    chunks = re.split(r"(?<=[.!?。])\s+|(?<=다\.)\s+", compact_text(text))
+    return [compact_text(x) for x in chunks if compact_text(x)]
+
+
 def _format_market_cap(value: float | None, currency: str) -> str:
     if value is None:
         return "-"
@@ -1923,11 +2681,15 @@ def _to_float(value: Any) -> float | None:
 def _parse_backtest_request(payload: dict[str, Any]) -> dict[str, Any]:
     preset_key = str(payload.get("preset") or "").strip().lower()
     raw_weights = payload.get("weights")
+    raw_basket_codes = payload.get("basket_codes")
     market_raw = str(payload.get("market") or "").strip().upper()
-    if preset_key and raw_weights:
-        raise ValueError("use either preset or weights, not both")
-    if not preset_key and not raw_weights:
-        raise ValueError("preset or weights is required")
+    has_basket = bool(raw_basket_codes)
+    if preset_key and (raw_weights or has_basket):
+        raise ValueError("use either preset, weights, or basket_codes")
+    if raw_weights and has_basket:
+        raise ValueError("use either weights or basket_codes")
+    if not preset_key and not raw_weights and not has_basket:
+        raise ValueError("preset or weights or basket_codes is required")
 
     assets: list[BacktestAsset]
     preset_name: str | None = None
@@ -1943,7 +2705,12 @@ def _parse_backtest_request(payload: dict[str, Any]) -> dict[str, Any]:
         if not benchmark_code and preset.benchmark_code:
             benchmark_code = preset.benchmark_code
     else:
-        assets = _parse_backtest_weights(raw_weights)
+        if has_basket:
+            basket_codes = _parse_backtest_basket_codes(raw_basket_codes)
+            weight = 1.0 / len(basket_codes)
+            assets = [BacktestAsset(code=code, weight=weight) for code in basket_codes]
+        else:
+            assets = _parse_backtest_weights(raw_weights)
     if market not in {"KR", "US"}:
         raise ValueError("market must be KR or US")
 
@@ -2057,6 +2824,22 @@ def _parse_compare_preset_keys(raw: Any) -> list[str]:
                 keys.append(key)
         return keys
     raise ValueError("compare_presets must be string or list")
+
+
+def _parse_backtest_basket_codes(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        raise ValueError("basket_codes must be a list")
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        code = str(item or "").strip().upper()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        out.append(code)
+    if not out:
+        raise ValueError("basket_codes is empty")
+    return out
 
 
 def _validate_iso_date(value: str, field_name: str) -> None:

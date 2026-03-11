@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}{{ sector.sector_name }} - {{ current_market }} - BriefAlpha{% endblock %}
+
+{% block content %}
+{% set is_kr = current_market == 'KR' %}
+{% set accent_link_class = 'text-indigo-600 hover:text-indigo-500' if is_kr else 'text-emerald-600 hover:text-emerald-500' %}
+<section class="space-y-6">
+  <div class="rounded-2xl bg-white p-6 shadow-sm">
+    <p class="text-sm text-gray-500">{{ sector.sector_code }}</p>
+    <h1 class="mt-1 text-2xl font-semibold text-gray-900">{{ sector.sector_name }}</h1>
+  </div>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">오늘의 요약</h2>
+    {% if digest and digest_view %}
+    <ul class="mt-3 space-y-2">
+      {% for line in digest_view['summary_lines'] %}
+      <li class="text-sm text-gray-900">{{ line }}</li>
+      {% endfor %}
+    </ul>
+    {% if digest_view['change_lines'] %}
+    <div class="mt-4">
+      <p class="text-xs font-semibold tracking-wide text-gray-500">변화 포인트</p>
+      <ul class="mt-2 space-y-1">
+        {% for line in digest_view['change_lines'] %}
+        <li class="text-sm text-gray-900">{{ line }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% if digest_view['question_lines'] %}
+    <div class="mt-4">
+      <p class="text-xs font-semibold tracking-wide text-gray-500">체크포인트</p>
+      <ul class="mt-2 space-y-1">
+        {% for line in digest_view['question_lines'] %}
+        <li class="text-sm text-gray-900">{{ line }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% if digest_view['ref_sources'] %}
+    <div class="mt-4">
+      <p class="text-xs font-semibold tracking-wide text-gray-500">근거 출처</p>
+      <div class="mt-2 flex flex-wrap gap-2">
+        {% for ref in digest_view['ref_sources'] %}
+        <a href="{{ ref['url'] }}" target="_blank" rel="noreferrer" class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-900 {{ accent_link_class }}">
+          {{ ref['title'] }}
+        </a>
+        {% endfor %}
+      </div>
+      {% if digest_view['ref_extra_count']|int > 0 %}
+      <p class="mt-2 text-xs text-gray-500">외 {{ digest_view['ref_extra_count'] }}건</p>
+      {% endif %}
+    </div>
+    {% endif %}
+    <p class="mt-3 text-xs text-gray-500">기준 시각: {{ digest['digest_date']|fmt_dt(current_market) }}</p>
+    {% else %}
+    <p class="mt-3 text-sm text-gray-500">요약이 아직 생성되지 않았습니다.</p>
+    {% endif %}
+  </section>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">산업 리포트</h2>
+    {% if sector_docs %}
+    <ul class="mt-3 space-y-3">
+      {% for doc in sector_docs %}
+      <li class="rounded-xl border border-gray-200 p-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-500">{{ doc['source_kind_label'] }}</span>
+          <span class="text-xs text-gray-500">{{ doc['published_at']|fmt_dt(current_market) }}</span>
+        </div>
+        <a href="{{ doc['url'] }}" target="_blank" rel="noreferrer" class="mt-2 block text-sm font-medium text-gray-900 {{ accent_link_class }}">
+          {{ doc['title'] }}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="mt-3 text-sm text-gray-500">최근 산업 리포트가 없습니다.</p>
+    {% endif %}
+  </section>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">상위 관련 종목</h2>
+    {% if top_stocks %}
+    <div class="mt-4 grid gap-3 md:grid-cols-2">
+      {% for row in top_stocks %}
+      <a href="{{ url_for('stock_detail', market=current_market.lower(), code=row['stock_code']) }}" class="rounded-xl border border-gray-200 p-4 hover:bg-gray-50">
+        <div class="flex items-center justify-between gap-2">
+          <p class="text-sm font-semibold text-gray-900">{{ row['stock_name'] }}</p>
+          <span class="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-500">{{ row['stock_code'] }}</span>
+        </div>
+        <p class="mt-2 text-sm text-gray-900">{{ row['line1'] or '요약이 아직 없습니다.' }}</p>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="mt-3 text-sm text-gray-500">관련 종목이 없습니다.</p>
+    {% endif %}
+  </section>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    <h2 class="text-lg font-semibold text-gray-900">AI 리포트</h2>
+    {% if agent_report %}
+    <p class="mt-2 text-xs text-gray-500">기간: {{ agent_report['period_start'] }} ~ {{ agent_report['period_end'] }}</p>
+    <pre class="mt-3 overflow-x-auto whitespace-pre-wrap text-xs text-gray-900">{{ agent_report['report_md'] }}</pre>
+    {% else %}
+    <p class="mt-3 text-sm text-gray-500">생성된 리포트가 없습니다.</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

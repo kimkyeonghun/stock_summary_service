@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from stock_mvp.utils import now_utc_iso
+from stock_mvp.utils import compact_text
 
 
 def list_pending_items(
@@ -14,6 +15,7 @@ def list_pending_items(
     lookback_days: int,
     top_n_per_stock: int,
     min_relevance: float,
+    min_mapping_score: float = 0.55,
     limit: int,
 ) -> list[dict[str, Any]]:
     sql = """
@@ -32,14 +34,27 @@ def list_pending_items(
         d.published_at,
         d.collected_at,
         COALESCE(d.relevance_score, 0) AS relevance_score,
+        COALESCE(m.score, 0) AS mapping_score,
+        COALESCE(m.entity_id, '') AS mapped_entity_id,
+        COALESCE(m.reason_json, '{}') AS mapping_reason_json,
+        COALESCE(p.parse_status, '') AS pdf_parse_status,
+        COALESCE(p.facts_json, '[]') AS pdf_facts_json,
+        COALESCE(p.text_excerpt, '') AS pdf_text_excerpt,
         COALESCE(d.published_at, d.collected_at) AS event_time,
         ROW_NUMBER() OVER (
           PARTITION BY d.stock_code
-          ORDER BY COALESCE(d.relevance_score, 0) DESC, COALESCE(d.published_at, d.collected_at) DESC, d.id DESC
+          ORDER BY
+            CASE WHEN COALESCE(p.parse_status, '') IN ('success', 'partial_success') THEN 1 ELSE 0 END DESC,
+            COALESCE(m.score, 0) DESC,
+            COALESCE(d.relevance_score, 0) DESC,
+            COALESCE(d.published_at, d.collected_at) DESC,
+            d.id DESC
         ) AS rn
       FROM documents d
       JOIN stocks s ON s.code = d.stock_code
       LEFT JOIN item_summaries i ON i.item_id = d.id
+      LEFT JOIN document_entity_map m ON m.document_id = d.id AND m.entity_type = 'ticker'
+      LEFT JOIN report_pdf_extracts p ON p.document_id = d.id
       WHERE s.is_active = 1
         AND lower(s.market) = lower(?)
         AND (
@@ -50,6 +65,13 @@ def list_pending_items(
         )
         AND COALESCE(d.published_at, d.collected_at) >= datetime('now', ?)
         AND COALESCE(d.relevance_score, 0) >= ?
+        AND (
+          m.document_id IS NULL
+          OR (
+            upper(COALESCE(m.entity_id, '')) = upper(d.stock_code)
+            AND COALESCE(m.score, 0) >= ?
+          )
+        )
     )
     SELECT
       item_id,
@@ -63,11 +85,23 @@ def list_pending_items(
       url,
       url_hash,
       published_at,
-      collected_at
+      collected_at,
+      mapping_score,
+      mapped_entity_id,
+      mapping_reason_json,
+      pdf_parse_status,
+      pdf_facts_json,
+      pdf_text_excerpt
     FROM candidates
     WHERE rn <= ?
     """
-    params: list[object] = [market, f"-{max(1, lookback_days)} days", float(min_relevance), max(1, int(top_n_per_stock))]
+    params: list[object] = [
+        market,
+        f"-{max(1, lookback_days)} days",
+        float(min_relevance),
+        float(min_mapping_score),
+        max(1, int(top_n_per_stock)),
+    ]
     if ticker_codes:
         placeholders = ",".join("?" for _ in ticker_codes)
         sql += f" AND stock_code IN ({placeholders})"
@@ -87,20 +121,22 @@ def upsert_item_summary(
     feed_one_liner: str = "",
     detail_bullets: list[str] | None = None,
     related_refs: list[dict[str, Any]] | None = None,
+    prompt_version: str = "",
 ) -> None:
     now_iso = now_utc_iso()
     conn.execute(
         """
         INSERT INTO item_summaries(
-          item_id, short_summary, impact_label, feed_one_liner, detail_bullets_json, related_refs_json, created_at, updated_at
+          item_id, short_summary, impact_label, feed_one_liner, detail_bullets_json, related_refs_json, prompt_version, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(item_id) DO UPDATE SET
           short_summary=excluded.short_summary,
           impact_label=excluded.impact_label,
           feed_one_liner=excluded.feed_one_liner,
           detail_bullets_json=excluded.detail_bullets_json,
           related_refs_json=excluded.related_refs_json,
+          prompt_version=excluded.prompt_version,
           updated_at=excluded.updated_at
         """,
         (
@@ -110,6 +146,7 @@ def upsert_item_summary(
             str(feed_one_liner or ""),
             json.dumps(list(detail_bullets or []), ensure_ascii=False),
             json.dumps(list(related_refs or []), ensure_ascii=False),
+            compact_text(prompt_version),
             now_iso,
             now_iso,
         ),
@@ -126,6 +163,7 @@ def get_item_summary(conn, item_id: int) -> dict[str, Any] | None:
           feed_one_liner,
           detail_bullets_json,
           related_refs_json,
+          prompt_version,
           created_at,
           updated_at
         FROM item_summaries

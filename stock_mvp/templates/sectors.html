@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}{{ current_market }} 섹터 - BriefAlpha{% endblock %}
+
+{% block content %}
+<section class="space-y-6">
+  <div class="rounded-2xl bg-white p-6 shadow-sm">
+    <h1 class="text-2xl font-semibold text-gray-900">{{ current_market }} 섹터 요약</h1>
+    <p class="mt-2 text-sm text-gray-500">섹터별 최신 요약과 관련 종목 흐름을 확인할 수 있습니다.</p>
+  </div>
+
+  <section class="rounded-2xl bg-white p-6 shadow-sm">
+    {% if sectors %}
+    <div class="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+      {% for row in sectors %}
+      <a href="{{ url_for('sector_detail_page', market=current_market.lower(), sector_code=row['sector_code']) }}" class="rounded-xl border border-gray-200 p-4 hover:bg-gray-50">
+        <div class="flex items-center justify-between gap-2">
+          <p class="text-sm font-semibold text-gray-900">{{ row['sector_name'] }}</p>
+          <span class="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-500">{{ row['sector_code'] }}</span>
+        </div>
+        <p class="mt-2 text-sm text-gray-900">{{ row['line1'] or '요약이 아직 없습니다.' }}</p>
+        <p class="mt-1 text-xs text-gray-500">{{ row['as_of']|fmt_dt(current_market) }}</p>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-500">섹터 요약 데이터가 없습니다.</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

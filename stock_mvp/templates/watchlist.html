@@ -65,12 +65,24 @@
             </div>
             <p class="text-xs text-gray-500">{{ row['code'] }}</p>
           </div>
-          <form method="post" action="{{ url_for('toggle_watchlist_stock', market=current_market.lower(), code=row['code']) }}">
+          <form
+            method="post"
+            action="{{ url_for('toggle_watchlist_stock', market=current_market.lower(), code=row['code']) }}"
+            data-ajax-watchlist-form
+            data-market="{{ current_market.lower() }}"
+            data-kind="stock"
+            data-value="{{ row['code'] }}"
+            data-subscribed="{% if row['is_subscribed'] %}1{% else %}0{% endif %}"
+            data-btn-subscribe-label="Subscribe"
+            data-btn-unsubscribe-label="Unsubscribe"
+            data-btn-subscribe-class="rounded-xl px-3 py-2 text-xs font-medium text-white {% if is_kr %}bg-indigo-600 hover:bg-indigo-500{% else %}bg-emerald-600 hover:bg-emerald-500{% endif %}"
+            data-btn-unsubscribe-class="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-600{% else %}hover:border-emerald-500 hover:text-emerald-600{% endif %}"
+          >
             <input type="hidden" name="next" value="{{ request.path }}" />
             {% if row['is_subscribed'] %}
-            <button type="submit" class="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-600{% else %}hover:border-emerald-500 hover:text-emerald-600{% endif %}">Unsubscribe</button>
+            <button data-role="watchlist-toggle-button" type="submit" class="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-600{% else %}hover:border-emerald-500 hover:text-emerald-600{% endif %}">Unsubscribe</button>
             {% else %}
-            <button type="submit" class="rounded-xl px-3 py-2 text-xs font-medium text-white {% if is_kr %}bg-indigo-600 hover:bg-indigo-500{% else %}bg-emerald-600 hover:bg-emerald-500{% endif %}">Subscribe</button>
+            <button data-role="watchlist-toggle-button" type="submit" class="rounded-xl px-3 py-2 text-xs font-medium text-white {% if is_kr %}bg-indigo-600 hover:bg-indigo-500{% else %}bg-emerald-600 hover:bg-emerald-500{% endif %}">Subscribe</button>
             {% endif %}
           </form>
         </article>
@@ -125,12 +137,24 @@
             </div>
             <p class="text-xs text-gray-500">{{ row['sector_code'] }}</p>
           </div>
-          <form method="post" action="{{ url_for('toggle_watchlist_sector', market=current_market.lower(), sector_code=row['sector_code']) }}">
+          <form
+            method="post"
+            action="{{ url_for('toggle_watchlist_sector', market=current_market.lower(), sector_code=row['sector_code']) }}"
+            data-ajax-watchlist-form
+            data-market="{{ current_market.lower() }}"
+            data-kind="sector"
+            data-value="{{ row['sector_code'] }}"
+            data-subscribed="{% if row['is_subscribed'] %}1{% else %}0{% endif %}"
+            data-btn-subscribe-label="Subscribe"
+            data-btn-unsubscribe-label="Unsubscribe"
+            data-btn-subscribe-class="rounded-xl px-3 py-2 text-xs font-medium text-white {% if is_kr %}bg-indigo-600 hover:bg-indigo-500{% else %}bg-emerald-600 hover:bg-emerald-500{% endif %}"
+            data-btn-unsubscribe-class="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-600{% else %}hover:border-emerald-500 hover:text-emerald-600{% endif %}"
+          >
             <input type="hidden" name="next" value="{{ request.path }}" />
             {% if row['is_subscribed'] %}
-            <button type="submit" class="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-600{% else %}hover:border-emerald-500 hover:text-emerald-600{% endif %}">Unsubscribe</button>
+            <button data-role="watchlist-toggle-button" type="submit" class="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 {% if is_kr %}hover:border-indigo-500 hover:text-indigo-600{% else %}hover:border-emerald-500 hover:text-emerald-600{% endif %}">Unsubscribe</button>
             {% else %}
-            <button type="submit" class="rounded-xl px-3 py-2 text-xs font-medium text-white {% if is_kr %}bg-indigo-600 hover:bg-indigo-500{% else %}bg-emerald-600 hover:bg-emerald-500{% endif %}">Subscribe</button>
+            <button data-role="watchlist-toggle-button" type="submit" class="rounded-xl px-3 py-2 text-xs font-medium text-white {% if is_kr %}bg-indigo-600 hover:bg-indigo-500{% else %}bg-emerald-600 hover:bg-emerald-500{% endif %}">Subscribe</button>
             {% endif %}
           </form>
         </article>
@@ -330,6 +354,7 @@
   if (searchInput) {
     searchInput.addEventListener("input", debounce(applyAll, 150));
   }
+  window.addEventListener("briefalpha:watchlist-change", applyAll);
 
   applyAll();
 </script>
