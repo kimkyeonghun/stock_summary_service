@@ -47,7 +47,9 @@ class AgentStats:
 def source_type_from_item(source: str, doc_type: str) -> str:
     src = (source or "").strip().lower()
     typ = (doc_type or "").strip().lower()
-    if src == "sec_edgar":
+    if src in {"sec_edgar", "opendart"}:
+        return "filing"
+    if typ == "filing":
         return "filing"
     if typ == "report":
         return "research"

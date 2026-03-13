@@ -15,12 +15,22 @@ from stock_mvp.agents.base import (
     source_type_from_item,
     split_sentences,
 )
+from stock_mvp.agents.prompts import SUMMARY_STYLE_GUIDE_V1
+from stock_mvp.agents.summary_quality import (
+    fact_token_preservation_ratio,
+    format_section_line,
+    has_required_sections,
+    reduce_title_copy,
+    sanitize_line,
+    sanitize_lines,
+)
+from stock_mvp.agents.translator import Translator
 from stock_mvp.config import Settings, load_settings
 from stock_mvp.llm_client import LLMClient
 from stock_mvp.storage import evidence_repo, item_summary_repo
 from stock_mvp.utils import compact_text, parse_datetime_maybe, url_hash
 
-ITEM_SUMMARY_PROMPT_VERSION = "m4_item_v1"
+ITEM_SUMMARY_PROMPT_VERSION = "m4_item_v2"
 MIN_MAPPING_SCORE = 0.55
 
 
@@ -28,6 +38,7 @@ class ItemSummarizerAgent:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or load_settings()
         self.llm = LLMClient(self.settings)
+        self.translator = Translator(self.settings)
 
     def run(
         self,
@@ -65,7 +76,8 @@ class ItemSummarizerAgent:
                 card = evidence_repo.get_card_by_item_id(conn, item_id=item_id)
                 if card is None:
                     card = self._build_or_reuse_card(conn, row)
-                    evidence_repo.upsert_card(conn, card)
+                card = self._translate_card_fields(conn, card)
+                evidence_repo.upsert_card(conn, card)
 
                 llm_item = self._build_item_summary_with_llm(item_id=item_id, row=row, card=card)
                 if llm_item is not None:
@@ -80,6 +92,21 @@ class ItemSummarizerAgent:
                         self._build_feed_one_liner(row=row, card=card, impact_label=impact_label)
                     )
                     detail_bullets = self._quality_guard_bullets(self._build_detail_bullets(card=card))
+
+                translated_fields = self.translator.translate_structured_to_ko(
+                    conn,
+                    {
+                        "short_summary": summary_text,
+                        "feed_one_liner": feed_one_liner,
+                        "detail_bullets": detail_bullets,
+                    },
+                    purpose="item_summary_bundle",
+                )
+                summary_text = self._quality_guard_summary_text(str(translated_fields.get("short_summary") or ""))
+                feed_one_liner = self._quality_guard_one_liner(str(translated_fields.get("feed_one_liner") or ""))
+                detail_bullets = self._quality_guard_bullets(
+                    [str(x) for x in list(translated_fields.get("detail_bullets") or [])]
+                )
 
                 related_refs = self._build_related_refs(row=row, card=card)
                 item_summary_repo.upsert_item_summary(
@@ -106,6 +133,27 @@ class ItemSummarizerAgent:
 
         conn.commit()
         return AgentStats(total=len(rows), created=created, skipped=skipped, errors=errors)
+
+    def _translate_card_fields(self, conn, card: dict[str, Any]) -> dict[str, Any]:
+        translated = dict(card)
+        translated_fields = self.translator.translate_structured_to_ko(
+            conn,
+            {
+                "fact_headline": str(card.get("fact_headline") or ""),
+                "facts": [str(x) for x in list(card.get("facts") or [])],
+                "interpretation": str(card.get("interpretation") or ""),
+                "risk_note": str(card.get("risk_note") or ""),
+            },
+            purpose="evidence_card_bundle",
+        )
+        translated["fact_headline"] = str(translated_fields.get("fact_headline") or "")
+        translated["facts"] = [str(x) for x in list(translated_fields.get("facts") or [])]
+        translated["interpretation"] = str(translated_fields.get("interpretation") or "")
+        translated["risk_note"] = str(translated_fields.get("risk_note") or "")
+        return self._validate_card(
+            translated,
+            entity_hint=str(card.get("entity_id") or ""),
+        )
 
     def _build_or_reuse_card(self, conn, row: dict[str, Any]) -> dict[str, Any]:
         market = str(row.get("market") or "").lower()
@@ -312,40 +360,69 @@ class ItemSummarizerAgent:
     def _quality_guard_summary_text(self, text: str) -> str:
         lines = [compact_text(x) for x in str(text or "").splitlines() if compact_text(x)]
         if not lines:
-            return text
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for line in lines:
-            norm = line.lower()
-            if norm in seen:
-                continue
-            seen.add(norm)
-            deduped.append(line[:260])
-            if len(deduped) >= 5:
-                break
-        return "\n".join(deduped)
+            return ""
+        cleaned = sanitize_lines(lines, max_len=220, limit=6)
+        return "\n".join(cleaned)
 
     def _quality_guard_one_liner(self, text: str) -> str:
-        value = compact_text(str(text or ""))
+        value = sanitize_line(str(text or ""), max_len=140)
         if not value:
             return ""
-        return value[:140]
+        return value
 
     def _quality_guard_bullets(self, bullets: list[str]) -> list[str]:
-        out: list[str] = []
-        seen: set[str] = set()
-        for raw in list(bullets or []):
-            text = compact_text(str(raw))
-            if not text:
-                continue
-            key = text.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(text[:220])
-            if len(out) >= 5:
-                break
-        return out
+        return sanitize_lines(list(bullets or []), max_len=220, limit=5)
+
+    def _compose_item_summary_lines(
+        self,
+        *,
+        title: str,
+        fact_lines: list[str],
+        interpretation: str,
+        risk_note: str,
+        checkpoint: str,
+        impact_label: str,
+    ) -> list[str]:
+        evidence_1 = fact_lines[0] if fact_lines else "핵심 사실이 제한적입니다."
+        evidence_2 = fact_lines[1] if len(fact_lines) > 1 else ""
+        conclusion = reduce_title_copy(fact_lines[0] if fact_lines else "", title) or interpretation
+        final_line = self._final_judgement_line(impact_label=impact_label, interpretation=interpretation)
+        candidates = [
+            format_section_line("conclusion", conclusion),
+            format_section_line("evidence", evidence_1),
+        ]
+        if evidence_2 and evidence_2 != evidence_1:
+            candidates.append(format_section_line("evidence", evidence_2))
+        candidates.extend(
+            [
+                format_section_line("risk", risk_note),
+                format_section_line("checkpoint", checkpoint),
+                format_section_line("final", final_line),
+            ]
+        )
+        lines = [x for x in candidates if x]
+        lines = sanitize_lines(lines, max_len=220, limit=6)
+        if has_required_sections(lines):
+            return lines
+        fallback = [
+            format_section_line("conclusion", conclusion or "핵심 흐름은 추가 확인이 필요합니다."),
+            format_section_line("evidence", evidence_1),
+            format_section_line("risk", risk_note),
+            format_section_line("checkpoint", checkpoint),
+            format_section_line("final", final_line),
+        ]
+        return sanitize_lines([x for x in fallback if x], max_len=220, limit=6)
+
+    @staticmethod
+    def _final_judgement_line(*, impact_label: str, interpretation: str) -> str:
+        base = sanitize_line(interpretation, max_len=180)
+        if impact_label == "positive":
+            tail = "중장기 가설은 유효할 수 있으나 추가 확인이 필요합니다."
+        elif impact_label == "negative":
+            tail = "단기 변동성 확대 가능성을 열어두고 추가 확인이 필요합니다."
+        else:
+            tail = "판단을 확정하기보다 추가 데이터를 확인하는 것이 적절합니다."
+        return f"{base} {tail}".strip() if base else tail
 
     def _build_interpretation(self, row: dict[str, Any], *, facts: list[str]) -> str:
         source = source_type_from_item(str(row.get("source") or ""), str(row.get("doc_type") or ""))
@@ -376,18 +453,21 @@ class ItemSummarizerAgent:
         return card
 
     def _build_short_summary(self, *, item_id: int, card: dict[str, Any]) -> str:
-        item_ref = f"ITEM-{item_id}"
         facts = list(card.get("facts") or [])
-        while len(facts) < 3:
-            facts.append(facts[-1] if facts else "Fact confirmation requires source review.")
-        lines = [
-            f"[FACT] {facts[0]} (src: {item_ref})",
-            f"[FACT] {facts[1]} (src: {item_ref})",
-            f"[FACT] {facts[2]} (src: {item_ref})",
-            f"[INTERPRETATION] {card.get('interpretation', '')} (src: {item_ref})",
-            f"[RISK] {card.get('risk_note', 'No explicit risk statement in source.')} (src: {item_ref})",
-        ]
-        return "\n".join(lines[:5])
+        if not facts:
+            facts = [compact_text(str(card.get("fact_headline") or ""))]
+        while len(facts) < 2:
+            facts.append(facts[-1] if facts else "핵심 사실 확인이 필요합니다.")
+        checkpoint = "다음 공시·리포트에서 동일 신호가 재확인되는지 확인이 필요합니다."
+        lines = self._compose_item_summary_lines(
+            title=facts[0],
+            fact_lines=facts[:2],
+            interpretation=str(card.get("interpretation") or ""),
+            risk_note=str(card.get("risk_note") or ""),
+            checkpoint=checkpoint,
+            impact_label="neutral",
+        )
+        return "\n".join(lines)
 
     def _build_item_summary_with_llm(self, *, item_id: int, row: dict[str, Any], card: dict[str, Any]) -> dict[str, Any] | None:
         if not self.llm.enabled():
@@ -447,18 +527,31 @@ class ItemSummarizerAgent:
         if len(detail_bullets) < 3:
             detail_bullets = self._build_detail_bullets(card=card)
 
-        item_ref = f"ITEM-{item_id}"
-        short_summary = "\n".join(
-            [
-                f"[FACT] {fact_lines[0]} (src: {item_ref})",
-                f"[FACT] {fact_lines[1]} (src: {item_ref})",
-                f"[FACT] {fact_lines[2]} (src: {item_ref})",
-                f"[INTERPRETATION] {interpretation} (src: {item_ref})",
-                f"[RISK] {risk_note} (src: {item_ref})",
-            ]
+        checkpoint = compact_text(str(payload.get("checkpoint") or payload.get("checkpoints") or ""))
+        if not checkpoint:
+            checkpoint = "다음 분기 공시와 수요 지표 변화 확인이 필요합니다."
+        short_lines = self._compose_item_summary_lines(
+            title=str(row.get("title") or ""),
+            fact_lines=fact_lines,
+            interpretation=interpretation,
+            risk_note=risk_note,
+            checkpoint=checkpoint,
+            impact_label=impact_label,
         )
+        source_text = f"{row.get('title') or ''} {row.get('body') or ''}"
+        preserve_ratio = fact_token_preservation_ratio(source_text, "\n".join(short_lines))
+        if preserve_ratio < 0.5:
+            # Preserve key factual anchors when translation/paraphrase drops too many tokens.
+            short_lines = self._compose_item_summary_lines(
+                title=str(row.get("title") or ""),
+                fact_lines=[fact_lines[0], fact_lines[1]],
+                interpretation=interpretation,
+                risk_note=risk_note,
+                checkpoint=checkpoint,
+                impact_label=impact_label,
+            )
         return {
-            "short_summary": short_summary,
+            "short_summary": "\n".join(short_lines),
             "impact_label": impact_label,
             "feed_one_liner": feed_one_liner,
             "detail_bullets": detail_bullets[:5],
@@ -522,12 +615,12 @@ class ItemSummarizerAgent:
             "record",
             "surge",
             "strong",
-            "상승",
+            "이익",
             "호재",
             "개선",
             "증가",
-            "확대",
-            "신규 수주",
+            "상향",
+            "수주",
         )
         has_negative = any(keyword in text for keyword in negative_keywords)
         has_positive = any(keyword in text for keyword in positive_keywords)
@@ -544,7 +637,7 @@ class ItemSummarizerAgent:
             lead = compact_text(str(facts[0] if facts else row.get("title") or ""))
         lead = lead[:120]
         suffix = {
-            "positive": "긍정 신호로 해석될 수 있습니다.",
+            "positive": "단기적으로 긍정 신호로 해석될 수 있습니다.",
             "negative": "단기 변동성 확대 가능성이 있습니다.",
             "neutral": "추가 확인이 필요한 이슈입니다.",
         }.get(impact_label, "추가 확인이 필요한 이슈입니다.")
@@ -581,10 +674,12 @@ def _item_card_user_prompt(*, row: dict[str, Any]) -> str:
 def _item_summary_system_prompt() -> str:
     return (
         "You are a Korean stock briefing writer for beginners. Return JSON only. "
-        "Required keys: fact_lines, interpretation, risk_note, impact_label, feed_one_liner, detail_bullets. "
+        "Required keys: fact_lines, interpretation, risk_note, checkpoint, impact_label, feed_one_liner, detail_bullets. "
         "fact_lines should be 2~3 concise factual sentences, paraphrased after understanding the text. "
+        "summary must map to section order: conclusion, evidence, risk, checkpoint, final judgement. "
         "impact_label must be one of positive|neutral|negative. "
-        "Do not output investment recommendation."
+        "Do not output investment recommendation. "
+        f"{SUMMARY_STYLE_GUIDE_V1}"
     )
 
 

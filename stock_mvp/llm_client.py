@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import math
 import sqlite3
@@ -35,6 +36,10 @@ class LLMClient:
         self.session.trust_env = settings.llm_trust_env
         self._job_spend_usd = 0.0
         self._cache: dict[str, LLMJsonResult] = {}
+        self._daily_usage_cache: dict[str, dict] = {}
+        self._daily_usage_dirty_counts: dict[str, int] = {}
+        self._budget_flush_every_calls = max(1, int(settings.llm_budget_flush_every_calls))
+        atexit.register(self.flush_pending_budget_usage)
 
     def enabled(self) -> bool:
         if self.provider == "none":
@@ -76,7 +81,7 @@ class LLMClient:
             actual_cost = self._estimate_cost_usd(prompt_tokens, completion_tokens)
             self._job_spend_usd += actual_cost
             if self._budget_enabled():
-                self._save_daily_usage(
+                self._stage_daily_usage(
                     self._merge_daily_usage(
                         daily_usage=daily_usage,
                         purpose=purpose,
@@ -356,15 +361,26 @@ class LLMClient:
         self._cache.pop(oldest_key, None)
 
     def _load_daily_usage(self) -> dict:
-        raw = self._get_meta_value(self._daily_meta_key())
+        key = self._daily_meta_key()
+        cached = self._daily_usage_cache.get(key)
+        if cached is not None:
+            return dict(cached)
+
+        raw = self._get_meta_value(key)
         if not raw:
-            return self._empty_daily_usage()
+            usage = self._empty_daily_usage()
+            self._daily_usage_cache[key] = usage
+            return dict(usage)
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
-            return self._empty_daily_usage()
+            usage = self._empty_daily_usage()
+            self._daily_usage_cache[key] = usage
+            return dict(usage)
         if not isinstance(parsed, dict):
-            return self._empty_daily_usage()
+            usage = self._empty_daily_usage()
+            self._daily_usage_cache[key] = usage
+            return dict(usage)
         usage = self._empty_daily_usage()
         usage["calls"] = int(parsed.get("calls") or 0)
         usage["input_tokens"] = int(parsed.get("input_tokens") or 0)
@@ -372,6 +388,7 @@ class LLMClient:
         usage["spent_usd"] = float(parsed.get("spent_usd") or 0.0)
         usage["by_purpose"] = parsed.get("by_purpose") if isinstance(parsed.get("by_purpose"), dict) else {}
         usage["by_model"] = parsed.get("by_model") if isinstance(parsed.get("by_model"), dict) else {}
+        self._daily_usage_cache[key] = dict(usage)
         return usage
 
     def _merge_daily_usage(
@@ -416,7 +433,26 @@ class LLMClient:
         return usage
 
     def _save_daily_usage(self, usage: dict) -> None:
-        self._set_meta_value(self._daily_meta_key(), json.dumps(usage, ensure_ascii=False))
+        key = self._daily_meta_key()
+        self._set_meta_value(key, json.dumps(usage, ensure_ascii=False))
+        self._daily_usage_cache[key] = dict(usage)
+        self._daily_usage_dirty_counts[key] = 0
+
+    def _stage_daily_usage(self, usage: dict) -> None:
+        key = self._daily_meta_key()
+        self._daily_usage_cache[key] = dict(usage)
+        dirty = int(self._daily_usage_dirty_counts.get(key) or 0) + 1
+        self._daily_usage_dirty_counts[key] = dirty
+        if dirty >= self._budget_flush_every_calls:
+            self._save_daily_usage(usage)
+
+    def flush_pending_budget_usage(self) -> None:
+        for key, usage in list(self._daily_usage_cache.items()):
+            dirty = int(self._daily_usage_dirty_counts.get(key) or 0)
+            if dirty <= 0:
+                continue
+            self._set_meta_value(key, json.dumps(usage, ensure_ascii=False))
+            self._daily_usage_dirty_counts[key] = 0
 
     @classmethod
     def _empty_daily_usage(cls) -> dict:

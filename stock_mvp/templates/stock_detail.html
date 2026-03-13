@@ -77,11 +77,26 @@
   <section class="rounded-2xl bg-white p-6 shadow-sm">
     <h2 class="text-lg font-semibold text-gray-900">오늘의 요약</h2>
     {% if digest and digest_view %}
+    {% if digest_view['summary_sections'] %}
+    <div class="mt-3 space-y-3">
+      {% for section in digest_view['summary_sections'] %}
+      <div>
+        <p class="text-xs font-semibold tracking-wide text-gray-500">{{ section['title'] }}</p>
+        <ul class="mt-2 space-y-1">
+          {% for item in section['items'] %}
+          <li class="text-sm text-gray-900">{{ item['text'] }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
     <ul class="mt-3 space-y-2">
       {% for line in digest_view['summary_lines'] %}
       <li class="text-sm text-gray-900">{{ line }}</li>
       {% endfor %}
     </ul>
+    {% endif %}
 
     {% if digest_view['question_lines'] %}
     <div class="mt-3">

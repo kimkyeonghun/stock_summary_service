@@ -21,6 +21,7 @@ SECTOR_CONSUMER_STAPLES = "CONSUMER_STAPLES"
 SECTOR_INDUSTRIALS = "INDUSTRIALS"
 SECTOR_COMMUNICATION_SERVICES = "COMMUNICATION_SERVICES"
 SECTOR_PLATFORM_IT = "PLATFORM_IT"
+SECTOR_GENERAL_ECONOMY = "GENERAL_ECONOMY"
 SECTOR_UTILITIES = "UTILITIES"
 SECTOR_REAL_ESTATE = "REAL_ESTATE"
 
@@ -47,6 +48,7 @@ DEFAULT_SECTORS: list[Sector] = [
         TAXONOMY_VERSION,
     ),
     Sector(SECTOR_PLATFORM_IT, "Platform IT", "Platform IT", TAXONOMY_VERSION),
+    Sector(SECTOR_GENERAL_ECONOMY, "일반 경제", "General Economy", TAXONOMY_VERSION),
     Sector(SECTOR_UTILITIES, "Utilities", "Utilities", TAXONOMY_VERSION),
     Sector(SECTOR_REAL_ESTATE, "Real Estate", "Real Estate", TAXONOMY_VERSION),
     Sector(SECTOR_UNCLASSIFIED, "Unclassified", "Unclassified", TAXONOMY_VERSION),
@@ -145,6 +147,14 @@ _KEYWORD_RULES: list[tuple[re.Pattern[str], str, float]] = [
         re.compile(r"(telecom|broadcast|entertainment|통신|방송|엔터)", flags=re.IGNORECASE),
         SECTOR_COMMUNICATION_SERVICES,
         0.68,
+    ),
+    (
+        re.compile(
+            r"(환율|금리|물가|고용|경기|수출|수입|통화정책|재정정책|fomc|cpi|ppi|gdp|한은|기재부)",
+            flags=re.IGNORECASE,
+        ),
+        SECTOR_GENERAL_ECONOMY,
+        0.72,
     ),
     (
         re.compile(r"(utility|electric|power|water|전력|가스공사|수도)", flags=re.IGNORECASE),

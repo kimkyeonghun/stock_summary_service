@@ -7,6 +7,7 @@ import requests
 import urllib3
 from bs4 import BeautifulSoup
 
+from stock_mvp.agents.translator import Translator
 from stock_mvp.config import Settings
 from stock_mvp.database import latest_documents
 from stock_mvp.llm_client import LLMClient
@@ -49,21 +50,44 @@ class CompanyProfileCollector:
             }
         )
         self.llm = LLMClient(settings)
+        self.translator = Translator(settings)
         self._yahoo_crumb: str = ""
 
     def collect(self, conn, stock: Stock) -> CollectedStockProfile | None:
         market = str(stock.market or "").upper()
+        result: CollectedStockProfile | None = None
         if market == "KR":
             result = self._collect_kr_naver(stock)
             if result is not None:
-                return result
-            return self._collect_from_documents(conn, stock)
+                return self._translate_profile(conn, result)
+            result = self._collect_from_documents(conn, stock)
+            return self._translate_profile(conn, result) if result is not None else None
         if market == "US":
             result = self._collect_us_yahoo(stock)
             if result is not None:
-                return result
-            return self._collect_from_documents(conn, stock)
-        return self._collect_from_documents(conn, stock)
+                return self._translate_profile(conn, result)
+            result = self._collect_from_documents(conn, stock)
+            return self._translate_profile(conn, result) if result is not None else None
+        result = self._collect_from_documents(conn, stock)
+        return self._translate_profile(conn, result) if result is not None else None
+
+    def _translate_profile(self, conn, profile: CollectedStockProfile) -> CollectedStockProfile:
+        translated = self.translator.translate_text_to_ko(
+            conn,
+            profile.description_ko,
+            purpose="company_profile_description",
+        )
+        if not translated:
+            translated = profile.description_ko
+        return CollectedStockProfile(
+            stock_code=profile.stock_code,
+            market=profile.market,
+            description_ko=translated,
+            description_raw=profile.description_raw,
+            source=profile.source,
+            source_url=profile.source_url,
+            source_updated_at=profile.source_updated_at,
+        )
 
     def _collect_kr_naver(self, stock: Stock) -> CollectedStockProfile | None:
         try:

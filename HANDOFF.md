@@ -52,6 +52,10 @@
 ## 5) Known Notes
 - `stock_mvp/web.py`에 구 요약용 헬퍼 일부가 남아있을 수 있으나 현재 핵심 화면은 신규 에이전트 테이블 기준으로 동작.
 - Windows PowerShell profile 경고(`profile.ps1`)는 명령 실행 자체에는 큰 영향 없음.
+- 요약 품질가드 경고 확인 포인트:
+  - `item_summarizer llm invalid summary payload`
+  - `entity_digest llm invalid payload`
+  - 위 경고가 반복되면 `stock_mvp/agents/summary_quality.py` 기준으로 fallback이 동작한 상태이므로 프롬프트/입력 본문 길이를 점검해야 함.
 
 ## 6) Suggested Next Work
 1. 종목-뉴스 매핑 정확도 고도화 (오탐 줄이기)
@@ -65,4 +69,3 @@
 아래 문장을 새 세션 첫 메시지로 사용:
 
 `HANDOFF.md와 CHATHISTORY.md를 먼저 읽고, 현재 브랜치 상태를 점검한 뒤 남은 작업 우선순위 3개를 제안해줘.`
-

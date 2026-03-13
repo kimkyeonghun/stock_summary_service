@@ -5,6 +5,7 @@ from collections import Counter
 from typing import Any
 
 from stock_mvp.agents.base import AgentStats, date_days_ago, iso_date_utc
+from stock_mvp.agents.translator import Translator
 from stock_mvp.config import Settings, load_settings
 from stock_mvp.llm_client import LLMClient
 from stock_mvp.storage import digest_repo, evidence_repo, report_repo
@@ -15,6 +16,7 @@ class ReportWriterAgent:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or load_settings()
         self.llm = LLMClient(self.settings)
+        self.translator = Translator(self.settings)
 
     def run(
         self,
@@ -60,6 +62,7 @@ class ReportWriterAgent:
                     end_date=end,
                     cards=cards,
                 )
+                report_md = self.translator.translate_markdown_to_ko(conn, report_md, purpose="agent_report_markdown")
                 report_repo.upsert_agent_report(
                     conn,
                     entity_type=entity_type,

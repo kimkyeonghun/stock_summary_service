@@ -54,6 +54,8 @@ def relevance_threshold(source: str, doc_type: str) -> float:
         return 0.34
     if src == "sec_edgar":
         return 0.12
+    if src == "opendart":
+        return 0.12
     if typ == "news":
         return 0.5
     return 0.38
@@ -81,6 +83,10 @@ def evaluate_stock_document_relevance(
         # SEC docs are already ticker-targeted in crawler URL path.
         score += 0.22
         reasons.append("sec_base")
+    elif source == "opendart":
+        # OpenDART docs are already corp_code-targeted in API response.
+        score += 0.22
+        reasons.append("opendart_base")
 
     for alias in _build_aliases(stock):
         alias_norm = alias.lower()

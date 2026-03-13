@@ -73,7 +73,7 @@ def create_app(settings: Settings | None = None) -> Flask:
         scheduler = start_scheduler(
             pipeline,
             cfg,
-            morning_brief_job=lambda: send_morning_brief(cfg),
+            morning_brief_job=(lambda: send_morning_brief(cfg)) if cfg.enable_morning_brief_schedule else None,
             universe_refresh_job=lambda: universe_refresher.refresh_all(kr_limit=100, us_limit=100),
             price_collect_kr_job=lambda: _run_price_collect_job(price_collector, market="KR"),
             price_collect_us_job=lambda: _run_price_collect_job(price_collector, market="US"),
@@ -2110,6 +2110,7 @@ def _build_digest_view(conn, digest_row: dict[str, Any] | None) -> dict[str, Any
     if not digest_row:
         return None
     summary_lines = _split_non_empty_lines(str(digest_row.get("summary_8line") or ""))
+    summary_sections = _build_digest_summary_sections(summary_lines)
     change_lines = _split_non_empty_lines(str(digest_row.get("change_3") or ""))
     question_lines = _split_non_empty_lines(str(digest_row.get("open_questions") or ""))
     refs = _safe_json_loads(digest_row.get("refs_json"), default=[])
@@ -2118,12 +2119,82 @@ def _build_digest_view(conn, digest_row: dict[str, Any] | None) -> dict[str, Any
     ref_visible = ref_sources[:5]
     return {
         "summary_lines": summary_lines,
+        "summary_sections": summary_sections,
         "change_lines": change_lines,
         "question_lines": question_lines,
         "refs": refs,
         "ref_sources": ref_visible,
         "ref_extra_count": max(0, len(ref_sources) - len(ref_visible)),
     }
+
+
+def _build_digest_summary_sections(summary_lines: list[str]) -> list[dict[str, Any]]:
+    section_titles = {
+        "conclusion": "결론 요약",
+        "evidence": "근거",
+        "risk": "리스크",
+        "checkpoint": "체크포인트",
+        "final": "최종 판단",
+        "other": "기타",
+    }
+    buckets: dict[str, list[dict[str, str]]] = {key: [] for key in section_titles}
+
+    for line in summary_lines:
+        text, cards = _split_digest_line_cards(line)
+        section_key, body = _parse_digest_section_line(text)
+        buckets[section_key].append({"text": body, "cards": cards})
+
+    ordered_keys = ("conclusion", "evidence", "risk", "checkpoint", "final", "other")
+    out: list[dict[str, Any]] = []
+    for key in ordered_keys:
+        items = buckets.get(key) or []
+        if not items:
+            continue
+        out.append({"key": key, "title": section_titles[key], "items": items})
+    return out
+
+
+def _split_digest_line_cards(line: str) -> tuple[str, str]:
+    raw = compact_text(str(line or ""))
+    if not raw:
+        return "", "-"
+    matched = re.search(r"\(cards:\s*([^)]+)\)\s*$", raw, flags=re.IGNORECASE)
+    if not matched:
+        return raw, "-"
+    cards = compact_text(matched.group(1)) or "-"
+    head = compact_text(raw[: matched.start()]) or raw
+    return head, cards
+
+
+def _parse_digest_section_line(line: str) -> tuple[str, str]:
+    raw = compact_text(str(line or ""))
+    if not raw:
+        return "other", ""
+    raw = re.sub(r"^\d+\)\s*", "", raw)
+    matched = re.match(r"^([A-Za-z가-힣 ]+)\s*:\s*(.+)$", raw)
+    if not matched:
+        return "other", raw
+    label = compact_text(matched.group(1))
+    body = compact_text(matched.group(2))
+    if not body:
+        return "other", ""
+    key = _normalize_digest_section_key(label)
+    return key, body
+
+
+def _normalize_digest_section_key(label: str) -> str:
+    lowered = compact_text(label).lower()
+    if lowered in {"결론", "conclusion", "핵심요약", "핵심"}:
+        return "conclusion"
+    if lowered in {"근거", "evidence", "fact"}:
+        return "evidence"
+    if lowered in {"리스크", "risk", "위험"}:
+        return "risk"
+    if lowered in {"체크포인트", "checkpoint", "확인"}:
+        return "checkpoint"
+    if lowered in {"최종 판단", "최종판단", "final", "sentiment"}:
+        return "final"
+    return "other"
 
 
 def _resolve_digest_ref_sources(conn, refs: list[dict[str, Any]]) -> list[dict[str, Any]]:

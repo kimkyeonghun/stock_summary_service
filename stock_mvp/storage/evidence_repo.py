@@ -99,7 +99,7 @@ def list_cards_for_ticker(
           AND lower(market) = lower(?)
           AND date(COALESCE(published_at, created_at)) >= date(?)
           AND date(COALESCE(published_at, created_at)) <= date(?)
-        ORDER BY date(COALESCE(published_at, created_at)) DESC, confidence_weight DESC, rowid DESC
+        ORDER BY date(COALESCE(published_at, created_at)) DESC, confidence_weight DESC
         LIMIT ?
         """,
         (ticker, market, start_date, end_date, max(1, limit)),
@@ -118,20 +118,42 @@ def list_cards_for_sector(
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT e.*
-        FROM evidence_cards e
-        JOIN stock_sector_map m ON m.stock_code = e.entity_id
-        JOIN stocks s ON s.code = e.entity_id
-        WHERE e.entity_type = 'ticker'
-          AND m.sector_code = ?
-          AND lower(s.market) = lower(?)
-          AND lower(e.market) = lower(?)
-          AND date(COALESCE(e.published_at, e.created_at)) >= date(?)
-          AND date(COALESCE(e.published_at, e.created_at)) <= date(?)
-        ORDER BY date(COALESCE(e.published_at, e.created_at)) DESC, e.confidence_weight DESC, e.rowid DESC
+        SELECT *
+        FROM (
+          SELECT e.*
+          FROM evidence_cards e
+          JOIN stock_sector_map m ON m.stock_code = e.entity_id
+          JOIN stocks s ON s.code = e.entity_id
+          WHERE e.entity_type = 'ticker'
+            AND m.sector_code = ?
+            AND lower(s.market) = lower(?)
+            AND lower(e.market) = lower(?)
+            AND date(COALESCE(e.published_at, e.created_at)) >= date(?)
+            AND date(COALESCE(e.published_at, e.created_at)) <= date(?)
+          UNION ALL
+          SELECT e.*
+          FROM evidence_cards e
+          WHERE e.entity_type = 'sector'
+            AND upper(e.entity_id) = upper(?)
+            AND lower(e.market) = lower(?)
+            AND date(COALESCE(e.published_at, e.created_at)) >= date(?)
+            AND date(COALESCE(e.published_at, e.created_at)) <= date(?)
+        ) merged
+        ORDER BY date(COALESCE(published_at, created_at)) DESC, confidence_weight DESC, datetime(created_at) DESC
         LIMIT ?
         """,
-        (sector_code, market, market, start_date, end_date, max(1, limit)),
+        (
+            sector_code,
+            market,
+            market,
+            start_date,
+            end_date,
+            sector_code,
+            market,
+            start_date,
+            end_date,
+            max(1, limit),
+        ),
     ).fetchall()
     return [_row_to_card(r) for r in rows]
 
@@ -177,4 +199,3 @@ def _safe_json_loads(text: str) -> Any:
         return json.loads(text)
     except json.JSONDecodeError:
         return []
-

@@ -7,6 +7,7 @@ This project collects:
 - Naver Finance Research company report items (KR)
 - Naver Finance Research industry report items by sector (KR)
 - SEC EDGAR filing items for US tickers (free-first)
+- OpenDART filing items for KR tickers (when `OPENDART_API_KEY` is set)
 
 Then it creates:
 - Stock-level 8-line summaries with source tags
@@ -32,6 +33,7 @@ Then it creates:
 - Backtest engine v1 (buy-and-hold, monthly rebalance, benchmark compare)
 - Backtest web screen: periodic contribution (DCA) + multi-portfolio/benchmark comparison chart
 - Stock summary format: conclusion/evidence/risk/checkpoints/final sentiment
+- Summary writing rule: `SUMMARY_STYLE.md` is enforced via agent prompt + quality guard
 - Stock detail: latest 10 documents first, with "load more" for additional items
 
 ## Quick start
@@ -120,6 +122,26 @@ python scripts/run_profiles.py --stock-codes "005930,AAPL"
 python scripts/run_profiles.py --stock-codes "005930" --force
 ```
 
+Backfill translations for recent records (default 14 days):
+
+```bash
+python scripts/run_translate_backfill.py --days 14 --scope all --market ALL
+python scripts/run_translate_backfill.py --days 14 --scope item,digest --market KR
+python scripts/run_translate_backfill.py --days 14 --scope all --market ALL --max-rows 1000 --translation-retries 0
+```
+
+`run_collect.py` executes an incremental translation backfill automatically whenever agent steps run (`include_agent_steps=true`), limited to rows generated/updated in that same run.
+
+KR RSS ingest pipeline (manual step-by-step):
+
+```bash
+python scripts/sync_krx_master.py
+python scripts/fetch_rss_news.py --limit-per-source 50
+python scripts/normalize_news.py --limit 200
+python scripts/map_news_entities.py --limit 200 --dry-run
+python scripts/map_news_entities.py --limit 200
+```
+
 Collect daily price bars directly:
 
 ```bash
@@ -182,11 +204,27 @@ Source-specific collection limits:
 - `NAVER_FINANCE_REPORTS_PER_STOCK` (default `8`)
 - `NAVER_INDUSTRY_REPORTS_PER_RUN` (default `60`, KR sector industry reports)
 - `SEC_REPORTS_PER_STOCK` (default `6`)
+- `OPENDART_MAX_PER_STOCK` (default `12`, KR filing items per stock)
+- `OPENDART_LOOKBACK_DAYS` (default `120`)
+- `OPENDART_CORE_KEYWORDS` (default: core disclosure keyword list)
+- `OPENDART_CORP_CODE_REFRESH_DAYS` (default `30`)
 
 Collection/summary flow controls:
 - `COLLECT_STORE_ALL_DOCS=true` (store all collected docs; do not drop by relevance at collect time)
 - `SUMMARY_TOP_N_PER_STOCK=10` (LLM summary candidate cap per stock within lookback)
 - `SUMMARY_MIN_RELEVANCE=0` (minimum relevance for summary candidate selection)
+- `ENABLE_KR_RSS_INGEST=true` (enable KR RSS ingest chain during KR/news collection)
+- `KR_RSS_FEED_URLS_JSON=[]` (optional source override; empty uses DB seeded defaults)
+- `KR_RSS_MAX_ITEMS_PER_SOURCE=200` (RSS ingest cap per source)
+- `KR_RSS_TICKER_THRESHOLD=8` (ticker mapping raw-score gate for RSS/mapping pipeline)
+- `KR_RSS_SECTOR_THRESHOLD=7` (named-sector score gate before GENERAL_ECONOMY fallback)
+- `KR_RSS_MAX_TICKERS_PER_ITEM=3` (multi-ticker route cap for one RSS item)
+- `KRX_MASTER_SERVICE_KEY=` (data.go.kr KRX master API key; empty uses stocks fallback)
+- `KRX_MASTER_REFRESH_DAYS=1` (KRX master refresh interval)
+- `GENERAL_ECONOMY_MIN_SCORE=7` (fallback score gate for `GENERAL_ECONOMY` sector routing)
+- `SUMMARY_MAX_ITEMS_PER_RUN=400` (run-level cap for item summary generation)
+- `DIGEST_MAX_ENTITIES_PER_RUN=80` (run-level cap for digest generation targets)
+- `REPORT_MAX_ENTITIES_PER_RUN=40` (run-level cap for report generation targets)
 
 Company profile fallback policy:
 - KR priority: manual > Naver profile > docs-derived summary > placeholder
@@ -195,9 +233,14 @@ Company profile fallback policy:
 
 Scheduler-related env vars:
 - `ENABLE_SCHEDULER=true`
-- `COLLECT_SCHEDULE_KST=00:00,06:00,12:00,18:00`
-- `SECTOR_REFRESH_TIME_KST=00:00` (run sector aggregation/summaries once per day at this collect slot)
+- `COLLECT_SCHEDULE_KST=00:00,06:00,12:00,18:00` (news-only collection slots)
+- `SECTOR_REFRESH_TIME_KST=00:00` (daily full slot: news/report collection + agent/sector steps)
 - `MORNING_BRIEF_TIME_KST=07:00`
+- `ENABLE_MORNING_BRIEF_SCHEDULE=false` (keep morning brief manual by default)
+- `ENABLE_KR_DISCLOSURE_SCHEDULE=true` (quarterly KR disclosure-only collect)
+- `KR_DISCLOSURE_SCHEDULE_MONTHS=1,4,7,10`
+- `KR_DISCLOSURE_DAY_OF_MONTH=2`
+- `KR_DISCLOSURE_TIME_KST=06:10`
 - `UNIVERSE_REFRESH_DAY_OF_MONTH=1`
 - `UNIVERSE_REFRESH_TIME_KST=05:30`
 - `CRAWLER_MAX_RETRIES=1`
@@ -216,6 +259,9 @@ Telegram env vars:
 SEC env vars:
 - `SEC_USER_AGENT=stock-mvp/0.1 (contact: your-email@example.com)`
 
+OpenDART env vars:
+- `OPENDART_API_KEY` (required to collect KR disclosures)
+
 LLM env vars:
 - `LLM_PROVIDER=none|ollama|gemini|openai|openrouter`
 - `LLM_MODEL=...`
@@ -225,6 +271,13 @@ LLM env vars:
 - `LLM_MAX_TOKENS=900`
 - `LLM_REQUEST_TIMEOUT_SEC=30`
 - `LLM_TRUST_ENV=false` (set `true` only if you intentionally want system proxy env for LLM calls)
+- `LLM_BUDGET_FLUSH_EVERY_CALLS=20`
+- `TRANSLATION_ENABLED=true`
+- `TRANSLATION_PROVIDER=openai`
+- `TRANSLATION_MODEL=gpt-4o-mini`
+- `TRANSLATION_API_KEY=` (optional; falls back to provider API key env)
+- `TRANSLATION_MAX_RETRIES=2`
+- `TRANSLATION_TIMEOUT_SEC=20`
 - `ENABLE_FINANCIAL_COLLECTION=true`
 - `FINANCIAL_REFRESH_MIN_HOURS=20`
 

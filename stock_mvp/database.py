@@ -61,6 +61,41 @@ CREATE TABLE IF NOT EXISTS sectors (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS sector_master_kr (
+    sector_id TEXT PRIMARY KEY,
+    sector_name TEXT NOT NULL,
+    related_keywords_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sector_master_kr_updated_at ON sector_master_kr(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ticker_master_kr (
+    ticker TEXT PRIMARY KEY,
+    company_name TEXT NOT NULL,
+    corp_name TEXT NOT NULL,
+    short_code TEXT NOT NULL,
+    isin TEXT NOT NULL,
+    market_type TEXT NOT NULL,
+    base_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ticker_master_kr_updated_at ON ticker_master_kr(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS alias_master_kr (
+    alias_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    alias TEXT NOT NULL,
+    alias_type TEXT NOT NULL,
+    weight REAL NOT NULL DEFAULT 1.0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(ticker) REFERENCES ticker_master_kr(ticker) ON DELETE CASCADE,
+    UNIQUE(ticker, alias, alias_type)
+);
+CREATE INDEX IF NOT EXISTS idx_alias_master_kr_alias ON alias_master_kr(alias, is_active);
+CREATE INDEX IF NOT EXISTS idx_alias_master_kr_ticker ON alias_master_kr(ticker, is_active);
 
 CREATE TABLE IF NOT EXISTS stock_sector_map (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,6 +137,59 @@ CREATE INDEX IF NOT EXISTS idx_documents_stock_type_recent ON documents(
     COALESCE(published_at, collected_at) DESC
 );
 
+CREATE TABLE IF NOT EXISTS rss_sources (
+    source_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_name TEXT NOT NULL,
+    feed_url TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    polling_minutes INTEGER NOT NULL DEFAULT 60,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(feed_url)
+);
+CREATE INDEX IF NOT EXISTS idx_rss_sources_active ON rss_sources(is_active, source_name);
+
+CREATE TABLE IF NOT EXISTS raw_news_items (
+    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_name TEXT NOT NULL,
+    feed_url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    snippet TEXT NOT NULL DEFAULT '',
+    original_url TEXT NOT NULL,
+    original_url_hash TEXT NOT NULL,
+    published_at TEXT,
+    fetched_at TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    raw_payload_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'new',
+    duplicate_of_item_id INTEGER,
+    mapping_result_json TEXT NOT NULL DEFAULT '{}',
+    mapped_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(duplicate_of_item_id) REFERENCES raw_news_items(item_id),
+    UNIQUE(original_url_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_raw_news_items_status ON raw_news_items(status, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_raw_news_items_content_hash ON raw_news_items(content_hash);
+CREATE INDEX IF NOT EXISTS idx_raw_news_items_published ON raw_news_items(published_at DESC);
+
+CREATE TABLE IF NOT EXISTS normalized_news_items (
+    item_id INTEGER PRIMARY KEY,
+    normalized_title TEXT NOT NULL,
+    normalized_snippet TEXT NOT NULL DEFAULT '',
+    normalized_body TEXT NOT NULL DEFAULT '',
+    lead_paragraph TEXT NOT NULL DEFAULT '',
+    body_paragraphs_json TEXT NOT NULL DEFAULT '[]',
+    journalist TEXT NOT NULL DEFAULT '',
+    publisher TEXT NOT NULL DEFAULT '',
+    published_at TEXT,
+    normalized_at TEXT NOT NULL,
+    FOREIGN KEY(item_id) REFERENCES raw_news_items(item_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_normalized_news_items_at ON normalized_news_items(normalized_at DESC);
+
 CREATE TABLE IF NOT EXISTS document_entity_map (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id INTEGER NOT NULL,
@@ -115,6 +203,22 @@ CREATE TABLE IF NOT EXISTS document_entity_map (
 );
 CREATE INDEX IF NOT EXISTS idx_document_entity_map_entity ON document_entity_map(entity_type, entity_id, score DESC);
 CREATE INDEX IF NOT EXISTS idx_document_entity_map_doc ON document_entity_map(document_id);
+
+CREATE TABLE IF NOT EXISTS news_entity_map (
+    map_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    score REAL NOT NULL DEFAULT 0,
+    confidence TEXT NOT NULL DEFAULT 'low',
+    mapping_reason_json TEXT NOT NULL DEFAULT '{}',
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(item_id) REFERENCES documents(id) ON DELETE CASCADE,
+    UNIQUE(item_id, entity_type, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_news_entity_map_item ON news_entity_map(item_id, is_primary DESC);
+CREATE INDEX IF NOT EXISTS idx_news_entity_map_entity ON news_entity_map(entity_type, entity_id, score DESC);
 
 CREATE TABLE IF NOT EXISTS report_pdf_extracts (
     document_id INTEGER PRIMARY KEY,
@@ -322,6 +426,25 @@ CREATE TABLE IF NOT EXISTS agent_reports (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_reports_entity ON agent_reports(entity_type, entity_id, market, period_end DESC);
 
+CREATE TABLE IF NOT EXISTS translation_cache (
+    source_hash TEXT PRIMARY KEY,
+    src_text TEXT NOT NULL,
+    ko_text TEXT NOT NULL,
+    model TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_translation_cache_updated_at ON translation_cache(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS opendart_corp_codes (
+    stock_code TEXT PRIMARY KEY,
+    corp_code TEXT NOT NULL,
+    corp_name TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(stock_code) REFERENCES stocks(code) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_opendart_corp_codes_corp_code ON opendart_corp_codes(corp_code);
+CREATE INDEX IF NOT EXISTS idx_opendart_corp_codes_updated_at ON opendart_corp_codes(updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,
@@ -366,14 +489,16 @@ MIGRATION_NFR_URLS_KEY = "migration.naver_finance_research_urls.v1"
 
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000;")
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    _migrate_general_economy_sector(conn)
     _migrate_stocks_table(conn)
     _migrate_documents_relevance_columns(conn)
     _migrate_item_summaries_columns(conn)
@@ -440,6 +565,84 @@ def list_stocks_by_market(conn: sqlite3.Connection, market: str, active_only: bo
         sql += " AND is_active = 1"
     sql += " ORDER BY COALESCE(rank, 99999), code"
     return conn.execute(sql, tuple(params)).fetchall()
+
+
+def list_active_stock_codes_by_market(conn: sqlite3.Connection, market: str) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT code
+        FROM stocks
+        WHERE is_active = 1
+          AND upper(market) = upper(?)
+        ORDER BY COALESCE(rank, 99999), code
+        """,
+        (market,),
+    ).fetchall()
+    return [str(r["code"]) for r in rows]
+
+
+def upsert_opendart_corp_codes(
+    conn: sqlite3.Connection,
+    rows: list[tuple[str, str, str]],
+    *,
+    commit: bool = True,
+) -> None:
+    if not rows:
+        return
+    now_iso = now_utc_iso()
+    conn.executemany(
+        """
+        INSERT INTO opendart_corp_codes(stock_code, corp_code, corp_name, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(stock_code) DO UPDATE SET
+          corp_code=excluded.corp_code,
+          corp_name=excluded.corp_name,
+          updated_at=excluded.updated_at
+        """,
+        [
+            (
+                compact_text(str(stock_code or "")).upper(),
+                compact_text(str(corp_code or "")),
+                compact_text(str(corp_name or "")),
+                now_iso,
+            )
+            for stock_code, corp_code, corp_name in rows
+            if compact_text(str(stock_code or "")) and compact_text(str(corp_code or ""))
+        ],
+    )
+    if commit:
+        conn.commit()
+
+
+def get_opendart_corp_code_map(conn: sqlite3.Connection, *, market: str = "KR") -> dict[str, str]:
+    rows = conn.execute(
+        """
+        SELECT c.stock_code, c.corp_code
+        FROM opendart_corp_codes c
+        JOIN stocks s ON s.code = c.stock_code
+        WHERE s.is_active = 1
+          AND upper(s.market) = upper(?)
+        ORDER BY s.code
+        """,
+        (market,),
+    ).fetchall()
+    return {str(r["stock_code"]).upper(): str(r["corp_code"]) for r in rows}
+
+
+def latest_opendart_corp_code_updated_at(conn: sqlite3.Connection, *, market: str = "KR") -> str:
+    row = conn.execute(
+        """
+        SELECT COALESCE(MAX(c.updated_at), '') AS latest
+        FROM opendart_corp_codes c
+        JOIN stocks s ON s.code = c.stock_code
+        WHERE s.is_active = 1
+          AND upper(s.market) = upper(?)
+        """,
+        (market,),
+    ).fetchone()
+    if not row:
+        return ""
+    return str(row["latest"] or "")
 
 
 def get_stock(conn: sqlite3.Connection, code: str) -> sqlite3.Row | None:
@@ -809,6 +1012,140 @@ def upsert_document_entity_mapping(
     )
     if commit:
         conn.commit()
+
+
+def clear_news_entity_map_for_item(conn: sqlite3.Connection, item_id: int, commit: bool = True) -> None:
+    conn.execute("DELETE FROM news_entity_map WHERE item_id = ?", (int(item_id),))
+    if commit:
+        conn.commit()
+
+
+def upsert_news_entity_map(
+    conn: sqlite3.Connection,
+    *,
+    item_id: int,
+    entity_type: str,
+    entity_id: str,
+    score: float,
+    confidence: str,
+    mapping_reason: dict[str, object] | None = None,
+    is_primary: bool = False,
+    commit: bool = True,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO news_entity_map(
+          item_id, entity_type, entity_id, score, confidence, mapping_reason_json, is_primary, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(item_id, entity_type, entity_id) DO UPDATE SET
+          score=excluded.score,
+          confidence=excluded.confidence,
+          mapping_reason_json=excluded.mapping_reason_json,
+          is_primary=excluded.is_primary,
+          created_at=excluded.created_at
+        """,
+        (
+            int(item_id),
+            compact_text(entity_type).lower(),
+            compact_text(entity_id).upper(),
+            max(0.0, float(score)),
+            compact_text(confidence).lower() or "low",
+            json.dumps(mapping_reason or {}, ensure_ascii=False),
+            1 if is_primary else 0,
+            now_utc_iso(),
+        ),
+    )
+    if commit:
+        conn.commit()
+
+
+def upsert_sector_document_by_code(
+    conn: sqlite3.Connection,
+    *,
+    sector_code: str,
+    source: str,
+    doc_type: str,
+    title: str,
+    url: str,
+    published_at: str | None,
+    body: str,
+    commit: bool = True,
+) -> bool:
+    normalized_url = normalize_url(url) or url
+    normalized_hash = url_hash(normalized_url)
+    cursor = conn.execute(
+        """
+        INSERT INTO sector_documents(
+          sector_code, source, doc_type, title, url, published_at, body, url_hash, collected_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sector_code, source, url_hash) DO NOTHING
+        """,
+        (
+            compact_text(sector_code).upper(),
+            compact_text(source).lower(),
+            compact_doc_type(doc_type),
+            compact_text(title),
+            normalized_url,
+            compact_text(str(published_at or "")) or None,
+            compact_text(body),
+            normalized_hash,
+            now_utc_iso(),
+        ),
+    )
+    inserted = int(cursor.rowcount or 0) > 0
+    if not inserted:
+        conn.execute(
+            """
+            UPDATE sector_documents
+            SET
+              title = CASE WHEN length(?) > length(title) THEN ? ELSE title END,
+              published_at = COALESCE(?, published_at),
+              body = CASE WHEN length(?) > length(body) THEN ? ELSE body END,
+              collected_at = ?
+            WHERE sector_code = ? AND source = ? AND url_hash = ?
+            """,
+            (
+                compact_text(title),
+                compact_text(title),
+                compact_text(str(published_at or "")) or None,
+                compact_text(body),
+                compact_text(body),
+                now_utc_iso(),
+                compact_text(sector_code).upper(),
+                compact_text(source).lower(),
+                normalized_hash,
+            ),
+        )
+    if commit:
+        conn.commit()
+    return inserted
+
+
+def recent_mapped_sector_entities(
+    conn: sqlite3.Connection,
+    *,
+    market: str,
+    lookback_days: int,
+    limit: int = 50,
+) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT n.entity_id
+        FROM news_entity_map n
+        JOIN documents d ON d.id = n.item_id
+        JOIN stocks s ON s.code = d.stock_code
+        WHERE n.entity_type = 'sector'
+          AND n.is_primary = 1
+          AND lower(s.market) = lower(?)
+          AND COALESCE(d.published_at, d.collected_at) >= datetime('now', ?)
+        ORDER BY n.entity_id
+        LIMIT ?
+        """,
+        (market, f"-{max(1, int(lookback_days))} days", max(1, int(limit))),
+    ).fetchall()
+    return [str(r["entity_id"]) for r in rows]
 
 
 def list_document_entity_mappings(
@@ -1778,6 +2115,50 @@ def crawler_stats_for_run(conn: sqlite3.Connection, run_id: int) -> list[sqlite3
     ).fetchall()
 
 
+def _migrate_general_economy_sector(conn: sqlite3.Connection) -> None:
+    now_iso = now_utc_iso()
+    keywords = [
+        "환율",
+        "금리",
+        "물가",
+        "고용",
+        "경기",
+        "수출",
+        "수입",
+        "통화정책",
+        "재정정책",
+        "한은",
+        "FOMC",
+        "CPI",
+        "PPI",
+        "GDP",
+    ]
+    conn.execute(
+        """
+        INSERT INTO sectors(sector_code, sector_name_ko, sector_name_en, taxonomy_version, is_active, updated_at)
+        VALUES (?, ?, ?, ?, 1, ?)
+        ON CONFLICT(sector_code) DO UPDATE SET
+          sector_name_ko=excluded.sector_name_ko,
+          sector_name_en=excluded.sector_name_en,
+          taxonomy_version=excluded.taxonomy_version,
+          is_active=excluded.is_active,
+          updated_at=excluded.updated_at
+        """,
+        ("GENERAL_ECONOMY", "일반 경제", "General Economy", "v1", now_iso),
+    )
+    conn.execute(
+        """
+        INSERT INTO sector_master_kr(sector_id, sector_name, related_keywords_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(sector_id) DO UPDATE SET
+          sector_name=excluded.sector_name,
+          related_keywords_json=excluded.related_keywords_json,
+          updated_at=excluded.updated_at
+        """,
+        ("GENERAL_ECONOMY", "일반 경제", json.dumps(keywords, ensure_ascii=False), now_iso),
+    )
+
+
 def _migrate_stocks_table(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(stocks)").fetchall()}
     alter_statements: list[str] = []
@@ -1913,6 +2294,17 @@ def _migrate_naver_finance_research_urls(conn: sqlite3.Connection) -> None:
         )
         conn.execute("DELETE FROM sector_document_links WHERE document_id = ?", (source_document_id,))
         conn.execute("DELETE FROM documents WHERE id = ?", (source_document_id,))
+
+
+def get_app_meta_value(conn: sqlite3.Connection, key: str) -> str:
+    value = _get_app_meta(conn, key)
+    return compact_text(value or "")
+
+
+def set_app_meta_value(conn: sqlite3.Connection, key: str, value: str, *, commit: bool = True) -> None:
+    _set_app_meta(conn, compact_text(key), compact_text(value))
+    if commit:
+        conn.commit()
 
 
 def _get_app_meta(conn: sqlite3.Connection, key: str) -> str | None:
